@@ -23,15 +23,15 @@ class OpenModel {
 
   factory OpenModel.fromJson(Map<String, dynamic> json) {
     return OpenModel(
-      id: json['id'],
-      name: json['name'],
-      publisher: json['publisher'],
-      parameterSizeB: json['parameter_size_b'],
-      format: json['format'],
-      quantization: json['quantization'],
-      downloadSizeMb: json['download_size_mb'],
-      minRamGb: json['min_ram_gb'],
-      downloadUrl: json['download_url'],
+      id: json['id'] ?? '',
+      name: json['name'] ?? '',
+      publisher: json['publisher'] ?? '',
+      parameterSizeB: json['parameter_size_b']?.toString() ?? '',
+      format: json['format'] ?? '',
+      quantization: json['quantization'] ?? '',
+      downloadSizeMb: (json['download_size_mb'] as num?)?.toInt() ?? 0,
+      minRamGb: (json['min_ram_gb'] as num?)?.toInt() ?? 0,
+      downloadUrl: json['download_url'] ?? '',
     );
   }
 

@@ -1,12 +1,17 @@
 import 'package:flutter/material.dart';
-import 'package:mobai/model_selector_screen.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:mobai/screens/home_screen.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(
     MaterialApp(
-      home: ModelSelectorScreen(),
-      title: 'MobAI APp',
-      theme: ThemeData(useMaterial3: true, fontFamily: 'RobotoMono'),
+      home: HomeScreen(),
+      title: 'MobAI App',
+      theme: ThemeData(
+        useMaterial3: true,
+        textTheme: GoogleFonts.interTextTheme(),
+      ),
     ),
   );
 }
