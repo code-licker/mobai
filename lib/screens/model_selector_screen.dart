@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:mobai/models/open_model.dart';
 import 'package:mobai/screens/chat_screen.dart';
+import 'package:mobai/screens/widgets/model_filter_bottom_sheet.dart';
 import 'package:mobai/services/chat_session_service.dart';
 import 'package:mobai/services/model_manager_service.dart';
 
@@ -14,6 +16,8 @@ class ModelSelectorScreen extends StatefulWidget {
 class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
   final ModelManagerService _managerService = ModelManagerService();
   final ChatSessionService _chatService = ChatSessionService();
+  final TextEditingController _searchController = TextEditingController();
+  Timer? _debounceTimer;
 
   String? _selectedModelId;
 
@@ -24,23 +28,66 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
     if (_managerService.models.isEmpty) {
       _managerService.loadModels();
     } else {
-      _selectedModelId = _managerService.models.first.id;
+      final list = _managerService.filteredModels;
+      if (list.isNotEmpty) {
+        _selectedModelId = list.first.id;
+      }
     }
   }
 
   @override
   void dispose() {
+    _debounceTimer?.cancel();
+    _searchController.dispose();
     _managerService.removeListener(_onServiceUpdate);
     super.dispose();
   }
 
   void _onServiceUpdate() {
     if (mounted) {
-      if (_selectedModelId == null && _managerService.models.isNotEmpty) {
-        _selectedModelId = _managerService.models.first.id;
+      final filtered = _managerService.filteredModels;
+      if (_selectedModelId == null && filtered.isNotEmpty) {
+        _selectedModelId = filtered.first.id;
+      } else if (_selectedModelId != null && !filtered.any((m) => m.id == _selectedModelId)) {
+        _selectedModelId = filtered.isNotEmpty ? filtered.first.id : null;
       }
       setState(() {});
     }
+  }
+
+  void _onSearchChanged(String query) {
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(const Duration(milliseconds: 400), () {
+      _managerService.searchModels(query);
+    });
+  }
+
+  void _openFilterBottomSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return ModelFilterBottomSheet(
+          initialCriteria: _managerService.filterCriteria,
+          allModels: _managerService.models,
+          availableProviders: _managerService.availableProviders,
+          onApply: (newCriteria) {
+            _managerService.updateFilterCriteria(newCriteria);
+          },
+          onReset: () {
+            _managerService.clearFilters();
+          },
+        );
+      },
+    );
+  }
+
+  String _formatMb(double mb) {
+    if (mb >= 1024) {
+      return '${(mb / 1024).toStringAsFixed(1)} GB';
+    }
+    return '${mb.toInt()} MB';
   }
 
   Color _getPublisherColor(String publisher) {
@@ -157,7 +204,9 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                   ),
                   const SizedBox(height: 20),
                   LinearProgressIndicator(
-                    value: isDownloaded ? 1.0 : (isDownloading ? progress : null),
+                    value: isDownloaded
+                        ? 1.0
+                        : (isDownloading ? progress : null),
                     borderRadius: BorderRadius.circular(6),
                     minHeight: 8,
                   ),
@@ -337,9 +386,9 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
               });
 
               Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Added $name to catalog')),
-              );
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(SnackBar(content: Text('Added $name to catalog')));
             },
             child: const Text('Add Model'),
           ),
@@ -394,8 +443,10 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final models = _managerService.models;
+    final models = _managerService.filteredModels;
     final isLoading = _managerService.isLoading;
+    final filterCriteria = _managerService.filterCriteria;
+    final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(
@@ -404,75 +455,397 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
           tooltip: 'Back to Home',
           onPressed: () => Navigator.pop(context),
         ),
-        title: const Text('Select a model'),
+        title: const Text('Model Catalog'),
         centerTitle: true,
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Reload Models',
-            onPressed: () => _managerService.loadModels(),
+            onPressed: () {
+              if (_searchController.text.isNotEmpty) {
+                _managerService.searchModels(_searchController.text);
+              } else {
+                _managerService.loadModels();
+              }
+            },
           ),
         ],
       ),
       body: SafeArea(
         child: Column(
           children: [
-            // List of models
+            // Search Bar with Filter Icon
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
+              child: _buildSearchBar(context),
+            ),
+
+            // Active Filter Chips Bar (scrollable horizontally)
+            if (filterCriteria.isActive)
+              _buildActiveFiltersBar(context),
+
+            // Error Banner (if any)
+            if (_managerService.error != null)
+              _buildErrorBanner(context),
+
+            // Hugging Face Status Header
+            _buildHubStatusHeader(context, models.length),
+
+            // List of models or loading/empty state
             Expanded(
               child: isLoading
-                  ? const Center(
+                  ? Center(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          CircularProgressIndicator(),
-                          SizedBox(height: 16),
-                          Text('Loading model catalog...'),
+                          const CircularProgressIndicator(),
+                          const SizedBox(height: 16),
+                          Text(
+                            _searchController.text.isNotEmpty
+                                ? 'Searching Hugging Face for "${_searchController.text}"...'
+                                : 'Fetching models from Hugging Face...',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
                         ],
                       ),
                     )
                   : models.isEmpty
-                      ? Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Icon(Icons.inbox_outlined, size: 48, color: Colors.grey),
-                              const SizedBox(height: 12),
-                              const Text('No models found'),
-                              const SizedBox(height: 12),
-                              OutlinedButton.icon(
-                                onPressed: _showAddCustomModelDialog,
-                                icon: const Icon(Icons.add),
-                                label: const Text('Add Model'),
+                  ? Center(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              filterCriteria.isActive
+                                  ? Icons.filter_alt_off_outlined
+                                  : Icons.cloud_off_outlined,
+                              size: 54,
+                              color: theme.colorScheme.outline,
+                            ),
+                            const SizedBox(height: 14),
+                            Text(
+                              filterCriteria.isActive
+                                  ? 'No models match current filters'
+                                  : (_searchController.text.isNotEmpty
+                                      ? 'No models found for "${_searchController.text}"'
+                                      : 'No models available'),
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.bold,
                               ),
-                            ],
-                          ),
-                        )
-                      : ListView.builder(
-                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
-                          itemCount: models.length,
-                          itemBuilder: (context, index) {
-                            final model = models[index];
-                            final isSelected = _selectedModelId == model.id;
-                            final isDownloaded = _managerService.isModelDownloaded(model.id);
-                            final isDownloading = _managerService.isModelDownloading(model.id);
-                            final downloadProgress = _managerService.getDownloadProgress(model.id);
-
-                            return _buildModelCard(
-                              context: context,
-                              model: model,
-                              isSelected: isSelected,
-                              isDownloaded: isDownloaded,
-                              isDownloading: isDownloading,
-                              downloadProgress: downloadProgress,
-                            );
-                          },
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              filterCriteria.isActive
+                                  ? 'Try relaxing your size, params, or RAM sliders, or reset all filters.'
+                                  : 'Try a different search term on Hugging Face or add a model manually.',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 16),
+                            Wrap(
+                              spacing: 10,
+                              children: [
+                                if (filterCriteria.isActive)
+                                  FilledButton.tonalIcon(
+                                    onPressed: () => _managerService.clearFilters(),
+                                    icon: const Icon(Icons.refresh, size: 18),
+                                    label: const Text('Reset Filters'),
+                                  ),
+                                if (_searchController.text.isNotEmpty)
+                                  OutlinedButton.icon(
+                                    onPressed: () {
+                                      _searchController.clear();
+                                      _managerService.searchModels('');
+                                    },
+                                    icon: const Icon(Icons.clear, size: 18),
+                                    label: const Text('Clear Search'),
+                                  ),
+                                OutlinedButton.icon(
+                                  onPressed: _showAddCustomModelDialog,
+                                  icon: const Icon(Icons.add, size: 18),
+                                  label: const Text('Add Model'),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
+                      ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+                      itemCount: models.length,
+                      itemBuilder: (context, index) {
+                        final model = models[index];
+                        final isSelected = _selectedModelId == model.id;
+                        final isDownloaded = _managerService.isModelDownloaded(
+                          model.id,
+                        );
+                        final isDownloading = _managerService
+                            .isModelDownloading(model.id);
+                        final downloadProgress = _managerService
+                            .getDownloadProgress(model.id);
+
+                        return _buildModelCard(
+                          context: context,
+                          model: model,
+                          isSelected: isSelected,
+                          isDownloaded: isDownloaded,
+                          isDownloading: isDownloading,
+                          downloadProgress: downloadProgress,
+                        );
+                      },
+                    ),
             ),
           ],
         ),
       ),
       // Floating Bottom Capsule with (+) Add new model and (>) Chat matching wireframe Page 2
       bottomSheet: _buildBottomActionBar(context),
+    );
+  }
+
+  Widget _buildSearchBar(BuildContext context) {
+    final theme = Theme.of(context);
+    final criteria = _managerService.filterCriteria;
+    final isSearching = _managerService.isLoading && _searchController.text.isNotEmpty;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withAlpha(90),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: theme.colorScheme.outlineVariant.withAlpha(120),
+        ),
+      ),
+      child: Row(
+        children: [
+          const SizedBox(width: 12),
+          if (isSearching)
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: theme.colorScheme.primary,
+              ),
+            )
+          else
+            Icon(
+              Icons.search_rounded,
+              color: theme.colorScheme.onSurfaceVariant,
+              size: 22,
+            ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: TextField(
+              controller: _searchController,
+              onChanged: _onSearchChanged,
+              onSubmitted: (query) {
+                _debounceTimer?.cancel();
+                _managerService.searchModels(query);
+              },
+              decoration: InputDecoration(
+                hintText: 'Search Hugging Face models...',
+                hintStyle: TextStyle(
+                  color: theme.colorScheme.onSurfaceVariant.withAlpha(150),
+                  fontSize: 14,
+                ),
+                border: InputBorder.none,
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+            ),
+          ),
+          if (_searchController.text.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.clear_rounded, size: 18),
+              tooltip: 'Clear search',
+              onPressed: () {
+                _searchController.clear();
+                _debounceTimer?.cancel();
+                _managerService.searchModels('');
+              },
+            ),
+          Container(
+            margin: const EdgeInsets.only(right: 6),
+            child: IconButton.filledTonal(
+              style: IconButton.styleFrom(
+                backgroundColor: criteria.isActive
+                    ? theme.colorScheme.primaryContainer
+                    : theme.colorScheme.surfaceContainerHigh,
+                foregroundColor: criteria.isActive
+                    ? theme.colorScheme.onPrimaryContainer
+                    : theme.colorScheme.onSurfaceVariant,
+              ),
+              icon: Badge(
+                isLabelVisible: criteria.isActive,
+                label: Text(
+                  '${criteria.activeFilterCount}',
+                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+                ),
+                child: const Icon(Icons.tune_rounded, size: 20),
+              ),
+              tooltip: 'Filter models',
+              onPressed: _openFilterBottomSheet,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActiveFiltersBar(BuildContext context) {
+    final criteria = _managerService.filterCriteria;
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Row(
+        children: [
+          if (criteria.isSizeFilterActive && criteria.sizeRangeMb != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: InputChip(
+                label: Text(
+                  'Size: ${_formatMb(criteria.sizeRangeMb!.start)}–${_formatMb(criteria.sizeRangeMb!.end)}',
+                  style: const TextStyle(fontSize: 11),
+                ),
+                onDeleted: () {
+                  _managerService.updateFilterCriteria(
+                    criteria.copyWith(clearSize: true),
+                  );
+                },
+              ),
+            ),
+          if (criteria.isParamsFilterActive && criteria.paramsRangeB != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: InputChip(
+                label: Text(
+                  'Params: ${criteria.paramsRangeB!.start.toStringAsFixed(1)}B–${criteria.paramsRangeB!.end.toStringAsFixed(1)}B',
+                  style: const TextStyle(fontSize: 11),
+                ),
+                onDeleted: () {
+                  _managerService.updateFilterCriteria(
+                    criteria.copyWith(clearParams: true),
+                  );
+                },
+              ),
+            ),
+          if (criteria.isRamFilterActive && criteria.ramRangeGb != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: InputChip(
+                label: Text(
+                  'RAM: ${criteria.ramRangeGb!.start.toInt()}–${criteria.ramRangeGb!.end.toInt()} GB',
+                  style: const TextStyle(fontSize: 11),
+                ),
+                onDeleted: () {
+                  _managerService.updateFilterCriteria(
+                    criteria.copyWith(clearRam: true),
+                  );
+                },
+              ),
+            ),
+          for (final provider in criteria.selectedProviders)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: InputChip(
+                label: Text(
+                  provider,
+                  style: const TextStyle(fontSize: 11),
+                ),
+                onDeleted: () {
+                  final updated = Set<String>.from(criteria.selectedProviders)..remove(provider);
+                  _managerService.updateFilterCriteria(
+                    criteria.copyWith(selectedProviders: updated),
+                  );
+                },
+              ),
+            ),
+          ActionChip(
+            label: const Text('Reset All', style: TextStyle(fontSize: 11)),
+            avatar: const Icon(Icons.refresh, size: 14),
+            onPressed: () {
+              _managerService.clearFilters();
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHubStatusHeader(BuildContext context, int count) {
+    final theme = Theme.of(context);
+    final query = _managerService.searchQuery;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 6, 20, 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: const BoxDecoration(
+                  color: Colors.green,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                query.isEmpty ? 'Hugging Face API' : 'HF Results for "$query"',
+                style: theme.textTheme.labelMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+          Text(
+            '$count ${count == 1 ? "model" : "models"}',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.outline,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildErrorBanner(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.errorContainer.withAlpha(120),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.wifi_off_rounded, size: 18, color: theme.colorScheme.error),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Offline or network issue. Showing local models.',
+              style: TextStyle(fontSize: 12, color: theme.colorScheme.onErrorContainer),
+            ),
+          ),
+          TextButton(
+            onPressed: () => _managerService.loadModels(),
+            child: const Text('Retry', style: TextStyle(fontSize: 12)),
+          ),
+        ],
+      ),
     );
   }
 
@@ -608,7 +981,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                               ),
                               const SizedBox(width: 4),
                               Text(
-                                isDownloaded ? "DL'ed ✓" : 'Not DL',
+                                isDownloaded ? "Downloaded" : 'Download',
                                 style: TextStyle(
                                   fontSize: 10,
                                   fontWeight: FontWeight.w600,
@@ -632,7 +1005,9 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest.withAlpha(50),
+                    color: theme.colorScheme.surfaceContainerHighest.withAlpha(
+                      50,
+                    ),
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
                       color: theme.colorScheme.outlineVariant.withAlpha(60),
@@ -692,7 +1067,10 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                           foregroundColor: Colors.green.shade700,
                           side: BorderSide(color: Colors.green.shade400),
                           visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 4,
+                          ),
                         ),
                         icon: const Icon(Icons.check_rounded, size: 16),
                         label: const Text('Downloaded'),
@@ -705,7 +1083,9 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                             width: 14,
                             height: 14,
                             child: CircularProgressIndicator(
-                              value: downloadProgress > 0 ? downloadProgress : null,
+                              value: downloadProgress > 0
+                                  ? downloadProgress
+                                  : null,
                               strokeWidth: 2,
                             ),
                           ),
@@ -723,7 +1103,10 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                       FilledButton.tonalIcon(
                         style: FilledButton.styleFrom(
                           visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 4,
+                          ),
                         ),
                         icon: const Icon(Icons.download_rounded, size: 16),
                         label: const Text('Download'),
@@ -741,7 +1124,10 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                       },
                       borderRadius: BorderRadius.circular(16),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 2,
+                        ),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -843,7 +1229,10 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
               TextButton.icon(
                 style: TextButton.styleFrom(
                   foregroundColor: theme.colorScheme.onSurface,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
                 ),
                 icon: Icon(
                   Icons.add_circle,
@@ -860,7 +1249,10 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
               // (>) Chat button from wireframe
               FilledButton.icon(
                 style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 10,
+                  ),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(24),
                   ),
