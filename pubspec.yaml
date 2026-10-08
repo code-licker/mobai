@@ -35,6 +35,8 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   flutter_launcher_icons: ^0.14.4
+  dio: ^5.11.0
+  google_fonts: ^8.2.1
 
 dev_dependencies:
   flutter_test:
@@ -63,59 +65,3 @@ flutter:
     - assets/json/supported_models.json
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg
-
-  # An image asset can refer to one or more resolution-specific "variants", see
-  # https://flutter.dev/to/resolution-aware-images
-
-  # For details regarding adding assets from package dependencies, see
-  # https://flutter.dev/to/asset-from-package
-
-  # To add custom fonts to your application, add a fonts section here,
-  # in this "flutter" section. Each entry in this list should have a
-  # "family" key with the font family name, and a "fonts" key with a
-  # list giving the asset and other descriptors for the font. For
-  # example:
-  fonts:
-    - family: RobotoMono
-      fonts:
-        - asset: fonts/RobotoMono-Bold.ttf
-          weight: 700
-        - asset: fonts/RobotoMono-BoldItalic.ttf
-          weight: 700
-          style: italic
-        - asset: fonts/RobotoMono-ExtraLight.ttf
-          weight: 200
-          style: normal
-        - asset: fonts/RobotoMono-ExtraLightItalic.ttf
-          weight: 200
-          style: italic
-        - asset: fonts/RobotoMono-Italic.ttf
-          weight: 400
-          style: italic
-        - asset: fonts/RobotoMono-Light.ttf
-          weight: 300
-          style: normal
-        - asset: fonts/RobotoMono-LightItalic.ttf
-          weight: 300
-          style: italic
-        - asset: fonts/RobotoMono-Medium.ttf
-          weight: 500
-          style: normal
-        - asset: fonts/RobotoMono-MediumItalic.ttf
-          weight: 500
-          style: italic
-        - asset: fonts/RobotoMono-Regular.ttf
-          weight: 400
-          style: normal
-        - asset: fonts/RobotoMono-SemiBold.ttf
-          weight: 600
-          style: normal
-        - asset: fonts/RobotoMono-SemiBoldItalic.ttf
-          weight: 600
-          style: italic
-        - asset: fonts/RobotoMono-Thin.ttf
-          weight: 100
-          style: normal
-        - asset: fonts/RobotoMono-ThinItalic.ttf
-          weight: 100
-          style: italic
