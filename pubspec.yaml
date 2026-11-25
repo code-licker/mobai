@@ -36,8 +36,9 @@ dependencies:
   cupertino_icons: ^1.0.8
   flutter_launcher_icons: ^0.14.4
   dio: ^5.11.0
-  google_fonts: ^8.2.1
+  google_fonts: ^9.0.0
 
+  material_ui: any
 dev_dependencies:
   flutter_test:
     sdk: flutter

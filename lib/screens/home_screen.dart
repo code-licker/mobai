@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:mobai/models/chat_session.dart';
 import 'package:mobai/screens/chat_screen.dart';
 import 'package:mobai/screens/model_selector_screen.dart';

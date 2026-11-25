@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:mobai/models/chat_session.dart';
 import 'package:mobai/services/chat_session_service.dart';
