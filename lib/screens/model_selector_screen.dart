@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 import 'package:mobai/models/open_model.dart';
 import 'package:mobai/screens/chat_screen.dart';
+import 'package:mobai/screens/widgets/add_custom_model_dialog.dart';
 import 'package:mobai/screens/widgets/model_filter_bottom_sheet.dart';
 import 'package:mobai/services/chat_session_service.dart';
 import 'package:mobai/services/model_manager_service.dart';
@@ -20,6 +21,24 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
   Timer? _debounceTimer;
 
   String? _selectedModelId;
+  bool _showMyModelsOnly = false;
+
+  List<OpenModel> get _visibleModels {
+    if (!_showMyModelsOnly) {
+      return _managerService.filteredModels;
+    }
+    final q = _searchController.text.trim().toLowerCase();
+    final myList = _managerService.myModels;
+    if (q.isEmpty) return myList;
+    return myList
+        .where(
+          (m) =>
+              m.name.toLowerCase().contains(q) ||
+              m.publisher.toLowerCase().contains(q) ||
+              m.id.toLowerCase().contains(q),
+        )
+        .toList();
+  }
 
   @override
   void initState() {
@@ -45,11 +64,11 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
 
   void _onServiceUpdate() {
     if (mounted) {
-      final filtered = _managerService.filteredModels;
-      if (_selectedModelId == null && filtered.isNotEmpty) {
-        _selectedModelId = filtered.first.id;
-      } else if (_selectedModelId != null && !filtered.any((m) => m.id == _selectedModelId)) {
-        _selectedModelId = filtered.isNotEmpty ? filtered.first.id : null;
+      final visible = _visibleModels;
+      if (_selectedModelId == null && visible.isNotEmpty) {
+        _selectedModelId = visible.first.id;
+      } else if (_selectedModelId != null && !visible.any((m) => m.id == _selectedModelId)) {
+        _selectedModelId = visible.isNotEmpty ? visible.first.id : null;
       }
       setState(() {});
     }
@@ -105,6 +124,9 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
 
   OpenModel? get _selectedModel {
     if (_selectedModelId == null) return null;
+    for (final m in _managerService.myModels) {
+      if (m.id == _selectedModelId) return m;
+    }
     try {
       return _managerService.models.firstWhere((m) => m.id == _selectedModelId);
     } catch (_) {
@@ -132,9 +154,11 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
   }
 
   void _navigateToChat(OpenModel model) {
+    final localPath = _managerService.getLocalModelPath(model.id);
     final session = _chatService.createSession(
       modelId: model.id,
       modelName: model.name,
+      modelFilePath: localPath,
     );
 
     Navigator.push(
@@ -145,21 +169,191 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
     );
   }
 
+  String _formatBytes(int bytes) {
+    if (bytes <= 0) return '0 MB';
+    if (bytes >= 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+    }
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  Future<void> _confirmDeleteModel(OpenModel model) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Model File?'),
+        content: Text(
+          'This will remove "${model.name}" from MobAI/models and free local storage.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _managerService.deleteDownloadedModel(model.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Deleted ${model.name} from MobAI/models')),
+        );
+      }
+    }
+  }
+
+  Future<void> _showVariantPickerSheet(OpenModel model) async {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return FutureBuilder<List<GgufVariant>>(
+          future: _managerService.getVariantsForModel(model),
+          builder: (context, snapshot) {
+            final theme = Theme.of(context);
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.tune_rounded, color: theme.colorScheme.primary),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Choose GGUF Variant',
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded),
+                          onPressed: () => Navigator.pop(sheetContext),
+                        ),
+                      ],
+                    ),
+                    Text(
+                      model.name,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    if (snapshot.connectionState == ConnectionState.waiting)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 28),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    else if (snapshot.hasError)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        child: Text(
+                          'Could not load GGUF files from Hugging Face: ${snapshot.error}',
+                          style: TextStyle(color: theme.colorScheme.error),
+                        ),
+                      )
+                    else if ((snapshot.data ?? const []).isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 16),
+                        child: Text('No .gguf files found in this repository.'),
+                      )
+                    else
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight: MediaQuery.of(context).size.height * 0.45,
+                        ),
+                        child: ListView.separated(
+                          shrinkWrap: true,
+                          itemCount: snapshot.data!.length,
+                          separatorBuilder: (_, _) => const Divider(height: 1),
+                          itemBuilder: (context, idx) {
+                            final variant = snapshot.data![idx];
+                            final sizeLabel = variant.sizeBytes != null
+                                ? _formatBytes(variant.sizeBytes!)
+                                : 'Size unknown';
+                            return ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: Text(
+                                variant.quantization,
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              subtitle: Text(
+                                '${variant.fileName} • $sizeLabel',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                              trailing: FilledButton.tonal(
+                                onPressed: () {
+                                  Navigator.pop(sheetContext);
+                                  _managerService.downloadModel(
+                                    model.id,
+                                    model: model,
+                                    variant: variant,
+                                  );
+                                },
+                                child: const Text('Download'),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _showDownloadAndProceedSheet(OpenModel model) {
     final theme = Theme.of(context);
-    showModalBottomSheet(
+    bool navigated = false;
+
+    showModalBottomSheet<void>(
       context: context,
       isDismissible: false,
       enableDrag: false,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setSheetState) {
-            final isDownloading = _managerService.isModelDownloading(model.id);
-            final progress = _managerService.getDownloadProgress(model.id);
+      builder: (sheetContext) {
+        return AnimatedBuilder(
+          animation: _managerService,
+          builder: (context, _) {
+            final state = _managerService.getDownloadState(model.id);
+            final isDownloading = state?.isDownloading ?? false;
+            final progress = state?.progress ?? 0.0;
             final isDownloaded = _managerService.isModelDownloaded(model.id);
+            final error = state?.errorMessage;
+
+            final receivedLabel = state != null && state.receivedBytes > 0
+                ? _formatBytes(state.receivedBytes)
+                : '0 MB';
+            final totalLabel = state != null && state.totalBytes > 0
+                ? _formatBytes(state.totalBytes)
+                : '${model.downloadSizeMb} MB';
+            final speedLabel = state != null && state.speedBytesPerSec > 0
+                ? ' • ${_formatBytes(state.speedBytesPerSec.round())}/s'
+                : '';
 
             return Padding(
               padding: const EdgeInsets.all(24.0),
@@ -172,12 +366,18 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                       Container(
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                          color: theme.colorScheme.primaryContainer,
+                          color: error != null
+                              ? theme.colorScheme.errorContainer
+                              : theme.colorScheme.primaryContainer,
                           shape: BoxShape.circle,
                         ),
                         child: Icon(
-                          Icons.downloading_rounded,
-                          color: theme.colorScheme.primary,
+                          error != null
+                              ? Icons.error_outline_rounded
+                              : Icons.downloading_rounded,
+                          color: error != null
+                              ? theme.colorScheme.error
+                              : theme.colorScheme.primary,
                         ),
                       ),
                       const SizedBox(width: 12),
@@ -186,7 +386,9 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Downloading Model Weights',
+                              error != null
+                                  ? 'Download Failed'
+                                  : 'Downloading Model Weights',
                               style: theme.textTheme.titleMedium?.copyWith(
                                 fontWeight: FontWeight.bold,
                               ),
@@ -203,64 +405,89 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                     ],
                   ),
                   const SizedBox(height: 20),
-                  LinearProgressIndicator(
-                    value: isDownloaded
-                        ? 1.0
-                        : (isDownloading ? progress : null),
-                    borderRadius: BorderRadius.circular(6),
-                    minHeight: 8,
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        isDownloaded
-                            ? 'Ready for inference!'
-                            : '${(progress * 100).toInt()}% • ${(progress * model.downloadSizeMb).toInt()} / ${model.downloadSizeMb} MB',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          fontWeight: FontWeight.w600,
+                  if (error == null) ...[
+                    LinearProgressIndicator(
+                      value: isDownloaded
+                          ? 1.0
+                          : (isDownloading && progress > 0 ? progress : null),
+                      borderRadius: BorderRadius.circular(6),
+                      minHeight: 8,
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          isDownloaded
+                              ? 'Ready in MobAI/models!'
+                              : '${(progress * 100).toInt()}% • $receivedLabel / $totalLabel$speedLabel',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
-                      ),
-                      Text(
-                        'Format: ${model.format}',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.outline,
+                        Text(
+                          model.quantization,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.outline,
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-                  if (!isDownloading && !isDownloaded)
-                    SizedBox(
+                      ],
+                    ),
+                  ] else
+                    Container(
                       width: double.infinity,
-                      child: FilledButton.icon(
-                        icon: const Icon(Icons.cloud_download_outlined),
-                        label: const Text('Start Download'),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.errorContainer.withAlpha(120),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        error,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: theme.colorScheme.onErrorContainer,
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 20),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
                         onPressed: () async {
-                          setSheetState(() {});
-                          await _managerService.downloadModel(
-                            model.id,
-                            onProgress: (_) {
-                              setSheetState(() {});
-                            },
-                          );
-                          if (context.mounted) {
-                            Navigator.pop(context);
-                            _navigateToChat(model);
+                          if (isDownloading) {
+                            await _managerService.cancelDownload(model.id);
+                          } else {
+                            _managerService.clearDownloadError(model.id);
+                          }
+                          if (sheetContext.mounted) {
+                            Navigator.pop(sheetContext);
                           }
                         },
+                        child: Text(isDownloading ? 'Cancel Download' : 'Close'),
                       ),
-                    ),
-                  if (isDownloading)
-                    Center(
-                      child: Text(
-                        'Please keep the app open while preparing weights...',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
+                      if (error != null) ...[
+                        const SizedBox(width: 8),
+                        FilledButton.icon(
+                          icon: const Icon(Icons.refresh_rounded, size: 18),
+                          label: const Text('Retry'),
+                          onPressed: () {
+                            _managerService
+                                .downloadModel(model.id, model: model)
+                                .then((downloaded) {
+                              if (downloaded != null &&
+                                  !navigated &&
+                                  sheetContext.mounted) {
+                                navigated = true;
+                                Navigator.pop(sheetContext);
+                                _navigateToChat(model);
+                              }
+                            });
+                          },
                         ),
-                      ),
-                    ),
+                      ],
+                    ],
+                  ),
                 ],
               ),
             );
@@ -269,10 +496,10 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
       },
     );
 
-    // Auto-trigger download when sheet opens
     if (!_managerService.isModelDownloading(model.id)) {
-      _managerService.downloadModel(model.id).then((_) {
-        if (mounted && Navigator.canPop(context)) {
+      _managerService.downloadModel(model.id, model: model).then((downloaded) {
+        if (downloaded != null && !navigated && mounted && Navigator.canPop(context)) {
+          navigated = true;
           Navigator.pop(context);
           _navigateToChat(model);
         }
@@ -280,121 +507,25 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
     }
   }
 
-  void _showAddCustomModelDialog() {
-    final nameController = TextEditingController();
-    final urlController = TextEditingController();
-    final sizeController = TextEditingController(text: '450');
-    final publisherController = TextEditingController(text: 'Community');
-    final descController = TextEditingController();
-    final theme = Theme.of(context);
+  Future<void> _showAddCustomModelDialog() async {
+    final result = await showAddCustomModelDialog(context);
+    if (result == null || !mounted) return;
 
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(Icons.add_box_outlined, color: theme.colorScheme.primary),
-            const SizedBox(width: 8),
-            const Text('Add New Model'),
-          ],
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Model Name *',
-                  hintText: 'e.g. Mistral 7B Instruct',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: publisherController,
-                decoration: const InputDecoration(
-                  labelText: 'Publisher / Author',
-                  hintText: 'e.g. Mistral AI',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: urlController,
-                decoration: const InputDecoration(
-                  labelText: 'Hugging Face / GGUF URL *',
-                  hintText: 'https://huggingface.co/...',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: sizeController,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: 'Estimated Size (MB)',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: descController,
-                maxLines: 2,
-                decoration: const InputDecoration(
-                  labelText: 'Model Description',
-                  hintText: 'Notes or reasoning capabilities...',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final name = nameController.text.trim();
-              if (name.isEmpty) return;
+    setState(() {
+      _selectedModelId = result.model.id;
+    });
 
-              final newModel = OpenModel(
-                id: 'custom-${DateTime.now().millisecondsSinceEpoch}',
-                name: name,
-                publisher: publisherController.text.trim().isEmpty
-                    ? 'Community'
-                    : publisherController.text.trim(),
-                parameterSizeB: '1.5',
-                format: 'GGUF',
-                quantization: 'Q4_K_M',
-                downloadSizeMb: int.tryParse(sizeController.text.trim()) ?? 500,
-                minRamGb: 4,
-                downloadUrl: urlController.text.trim(),
-                description: descController.text.trim().isEmpty
-                    ? 'Custom user-imported model for on-device inference.'
-                    : descController.text.trim(),
-                repoUrl: urlController.text.trim().isEmpty
-                    ? 'https://huggingface.co'
-                    : urlController.text.trim(),
-              );
-
-              _managerService.addCustomModel(newModel);
-              setState(() {
-                _selectedModelId = newModel.id;
-              });
-
-              Navigator.pop(context);
-              ScaffoldMessenger.of(
-                context,
-              ).showSnackBar(SnackBar(content: Text('Added $name to catalog')));
-            },
-            child: const Text('Add Model'),
-          ),
-        ],
-      ),
-    );
+    if (result.downloadAndUse) {
+      if (_managerService.isModelDownloaded(result.model.id)) {
+        _navigateToChat(result.model);
+      } else {
+        _showDownloadAndProceedSheet(result.model);
+      }
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Added ${result.model.name} to catalog')),
+      );
+    }
   }
 
   void _showModelLinkDialog(OpenModel model) {
@@ -443,8 +574,9 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final models = _managerService.filteredModels;
-    final isLoading = _managerService.isLoading;
+    final models = _visibleModels;
+    final myCount = _managerService.myModels.length;
+    final isLoading = !_showMyModelsOnly && _managerService.isLoading;
     final filterCriteria = _managerService.filterCriteria;
     final theme = Theme.of(context);
 
@@ -478,6 +610,61 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
               child: _buildSearchBar(context),
+            ),
+
+            // Catalog Scope Toggle: All vs My Models (Downloaded & Custom) + Rescan
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 12, 4),
+              child: Row(
+                children: [
+                  ChoiceChip(
+                    label: const Text('All', style: TextStyle(fontSize: 12)),
+                    selected: !_showMyModelsOnly,
+                    visualDensity: VisualDensity.compact,
+                    onSelected: (_) {
+                      setState(() {
+                        _showMyModelsOnly = false;
+                        _onServiceUpdate();
+                      });
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  ChoiceChip(
+                    label: Text(
+                      'My Models ($myCount)',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    selected: _showMyModelsOnly,
+                    visualDensity: VisualDensity.compact,
+                    onSelected: (_) {
+                      setState(() {
+                        _showMyModelsOnly = true;
+                        _onServiceUpdate();
+                      });
+                    },
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.sync_rounded, size: 19),
+                    tooltip: 'Rescan MobAI/models folder',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () async {
+                      await _managerService.syncWithStorage();
+                      if (context.mounted) {
+                        final count = _managerService.downloadedModels.length;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'Rescanned MobAI/models ($count local model${count == 1 ? '' : 's'})',
+                            ),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                ],
+              ),
             ),
 
             // Active Filter Chips Bar (scrollable horizontally)
@@ -591,6 +778,9 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                         final downloadProgress = _managerService
                             .getDownloadProgress(model.id);
 
+                        final downloadState =
+                            _managerService.getDownloadState(model.id);
+
                         return _buildModelCard(
                           context: context,
                           model: model,
@@ -598,6 +788,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                           isDownloaded: isDownloaded,
                           isDownloading: isDownloading,
                           downloadProgress: downloadProgress,
+                          downloadState: downloadState,
                         );
                       },
                     ),
@@ -856,9 +1047,11 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
     required bool isDownloaded,
     required bool isDownloading,
     required double downloadProgress,
+    ModelDownloadState? downloadState,
   }) {
     final theme = Theme.of(context);
     final pubColor = _getPublisherColor(model.publisher);
+    final downloadError = downloadState?.errorMessage;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
@@ -1056,64 +1249,149 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
 
                 const SizedBox(height: 12),
 
-                // Card Bottom Action Row: Download button & Selected Radio
+                // Card Bottom Action Row: Download / Progress / Delete / Variants & Selected Radio
+                if (downloadError != null && !isDownloading && !isDownloaded) ...[
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.errorContainer.withAlpha(120),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      downloadError,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: theme.colorScheme.onErrorContainer,
+                      ),
+                    ),
+                  ),
+                ],
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    // Download Button
-                    if (isDownloaded)
-                      OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.green.shade700,
-                          side: BorderSide(color: Colors.green.shade400),
-                          visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 4,
-                          ),
-                        ),
-                        icon: const Icon(Icons.check_rounded, size: 16),
-                        label: const Text('Downloaded'),
-                        onPressed: () {},
-                      )
-                    else if (isDownloading)
-                      Row(
+                    // Download / Progress / Retry / Delete Controls
+                    Flexible(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(
-                              value: downloadProgress > 0
-                                  ? downloadProgress
-                                  : null,
-                              strokeWidth: 2,
+                          if (isDownloaded) ...[
+                            OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.green.shade700,
+                                side: BorderSide(color: Colors.green.shade400),
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 4,
+                                ),
+                              ),
+                              icon: const Icon(Icons.check_rounded, size: 16),
+                              label: const Text('Downloaded'),
+                              onPressed: () {
+                                setState(() {
+                                  _selectedModelId = model.id;
+                                });
+                              },
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            'Downloading ${(downloadProgress * 100).toInt()}%...',
-                            style: theme.textTheme.labelMedium?.copyWith(
-                              color: theme.colorScheme.primary,
-                              fontWeight: FontWeight.w600,
+                            const SizedBox(width: 4),
+                            IconButton(
+                              icon: Icon(
+                                Icons.delete_outline_rounded,
+                                size: 20,
+                                color: theme.colorScheme.error,
+                              ),
+                              tooltip: 'Delete downloaded file',
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () => _confirmDeleteModel(model),
                             ),
-                          ),
+                          ] else if (isDownloading) ...[
+                            SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(
+                                value: downloadProgress > 0
+                                    ? downloadProgress
+                                    : null,
+                                strokeWidth: 2,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Flexible(
+                              child: Text(
+                                downloadState != null && downloadState.totalBytes > 0
+                                    ? '${(downloadProgress * 100).toInt()}% (${_formatBytes(downloadState.receivedBytes)})'
+                                    : 'Downloading ${(downloadProgress * 100).toInt()}%...',
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.labelMedium?.copyWith(
+                                  color: theme.colorScheme.primary,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            IconButton(
+                              icon: const Icon(Icons.close_rounded, size: 18),
+                              tooltip: 'Cancel download',
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () =>
+                                  _managerService.cancelDownload(model.id),
+                            ),
+                          ] else ...[
+                            FilledButton.tonalIcon(
+                              style: FilledButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 4,
+                                ),
+                              ),
+                              icon: Icon(
+                                downloadError != null
+                                    ? Icons.refresh_rounded
+                                    : Icons.download_rounded,
+                                size: 16,
+                              ),
+                              label: Text(
+                                downloadError != null ? 'Retry' : 'Download',
+                              ),
+                              onPressed: () {
+                                _managerService.downloadModel(
+                                  model.id,
+                                  model: model,
+                                );
+                              },
+                            ),
+                            if (!model.id.startsWith('local:')) ...[
+                              const SizedBox(width: 4),
+                              IconButton(
+                                icon: const Icon(Icons.layers_outlined, size: 18),
+                                tooltip: 'Choose quantization',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: () => _showVariantPickerSheet(model),
+                              ),
+                            ],
+                            if (_managerService.isCustomModel(model.id)) ...[
+                              const SizedBox(width: 2),
+                              IconButton(
+                                icon: Icon(
+                                  Icons.delete_outline_rounded,
+                                  size: 18,
+                                  color: theme.colorScheme.outline,
+                                ),
+                                tooltip: 'Remove custom model',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: () =>
+                                    _managerService.removeCustomModel(model.id),
+                              ),
+                            ],
+                          ],
                         ],
-                      )
-                    else
-                      FilledButton.tonalIcon(
-                        style: FilledButton.styleFrom(
-                          visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 4,
-                          ),
-                        ),
-                        icon: const Icon(Icons.download_rounded, size: 16),
-                        label: const Text('Download'),
-                        onPressed: () {
-                          _managerService.downloadModel(model.id);
-                        },
                       ),
+                    ),
 
                     // Selected Radio indicator matching wireframe
                     InkWell(

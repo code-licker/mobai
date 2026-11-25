@@ -1,7 +1,10 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:mobai/models/chat_session.dart';
+import 'package:mobai/screens/model_selector_screen.dart';
 import 'package:mobai/services/chat_session_service.dart';
+import 'package:mobai/services/local_inference_service.dart';
+import 'package:mobai/services/model_manager_service.dart';
 
 class ChatScreen extends StatefulWidget {
   final String sessionId;
@@ -17,23 +20,33 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _promptController = TextEditingController();
+  late final TextEditingController _systemPromptController;
   final ScrollController _scrollController = ScrollController();
   final ChatSessionService _chatService = ChatSessionService();
+  final ModelManagerService _modelManager = ModelManagerService();
+  final LocalInferenceService _inferenceService = LocalInferenceService();
 
   bool _isGenerating = false;
-  double _temperature = 0.7;
-  String _systemPrompt = 'You are a helpful, accurate, and concise AI assistant running locally on-device.';
 
   @override
   void initState() {
     super.initState();
+    final session = _chatService.getSessionById(widget.sessionId);
+    _systemPromptController = TextEditingController(
+      text: session?.systemPrompt ?? ChatSession.defaultSystemPrompt,
+    );
     _chatService.addListener(_onServiceUpdate);
+    _modelManager.addListener(_onServiceUpdate);
+    _inferenceService.addListener(_onServiceUpdate);
   }
 
   @override
   void dispose() {
     _chatService.removeListener(_onServiceUpdate);
+    _modelManager.removeListener(_onServiceUpdate);
+    _inferenceService.removeListener(_onServiceUpdate);
     _promptController.dispose();
+    _systemPromptController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -71,6 +84,31 @@ class _ChatScreenState extends State<ChatScreen> {
         sessionId: widget.sessionId,
         prompt: text,
       );
+    } on ModelFileNotFoundException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.message),
+            action: SnackBarAction(
+              label: 'Catalog',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const ModelSelectorScreen(),
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Inference error: $e')),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -82,6 +120,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _showSettingsModal(ChatSession session) {
     final theme = Theme.of(context);
+    _systemPromptController.text = session.systemPrompt;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -134,7 +173,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     children: [
                       Text('Temperature', style: theme.textTheme.bodyMedium),
                       Text(
-                        _temperature.toStringAsFixed(2),
+                        session.temperature.toStringAsFixed(2),
                         style: TextStyle(
                           color: theme.colorScheme.primary,
                           fontWeight: FontWeight.bold,
@@ -143,16 +182,17 @@ class _ChatScreenState extends State<ChatScreen> {
                     ],
                   ),
                   Slider(
-                    value: _temperature,
+                    value: session.temperature.clamp(0.1, 1.0),
                     min: 0.1,
                     max: 1.0,
                     divisions: 9,
-                    label: _temperature.toStringAsFixed(1),
+                    label: session.temperature.toStringAsFixed(1),
                     onChanged: (val) {
-                      setModalState(() {
-                        _temperature = val;
-                      });
-                      setState(() {});
+                      _chatService.updateSessionSettings(
+                        session.id,
+                        temperature: val,
+                      );
+                      setModalState(() {});
                     },
                   ),
                   const SizedBox(height: 8),
@@ -169,8 +209,13 @@ class _ChatScreenState extends State<ChatScreen> {
                         borderSide: BorderSide.none,
                       ),
                     ),
-                    controller: TextEditingController(text: _systemPrompt),
-                    onChanged: (val) => _systemPrompt = val,
+                    controller: _systemPromptController,
+                    onChanged: (val) {
+                      _chatService.updateSessionSettings(
+                        session.id,
+                        systemPrompt: val,
+                      );
+                    },
                   ),
                   const SizedBox(height: 16),
                   SizedBox(
@@ -183,9 +228,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       icon: const Icon(Icons.delete_outline_rounded, size: 18),
                       label: const Text('Clear Messages in this Chat'),
                       onPressed: () {
-                        setState(() {
-                          session.messages.clear();
-                        });
+                        _chatService.clearSessionMessages(session.id);
                         Navigator.pop(context);
                       },
                     ),
@@ -291,6 +334,9 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
 
+    final resolvedModelPath = _chatService.resolveModelFilePath(session);
+    final isModelAvailable = resolvedModelPath != null;
+
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
@@ -357,6 +403,51 @@ class _ChatScreenState extends State<ChatScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            if (!isModelAvailable)
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.errorContainer.withAlpha(140),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: theme.colorScheme.error.withAlpha(100),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.warning_amber_rounded,
+                      color: theme.colorScheme.error,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        '${session.modelName} was not found in MobAI/models.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: theme.colorScheme.onErrorContainer,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const ModelSelectorScreen(),
+                          ),
+                        );
+                      },
+                      child: const Text('Models'),
+                    ),
+                  ],
+                ),
+              ),
+
             // Chat messages list
             Expanded(
               child: session.messages.isEmpty
@@ -385,7 +476,9 @@ class _ChatScreenState extends State<ChatScreen> {
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            'Type a prompt below to run on-device inference',
+                            isModelAvailable
+                                ? 'Type a prompt below to run on-device inference'
+                                : 'Download this model in Model Catalog to start chatting',
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: theme.colorScheme.onSurfaceVariant,
                             ),
@@ -419,7 +512,9 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      'Generating response...',
+                      _inferenceService.isModelLoading
+                          ? 'Loading model weights into memory...'
+                          : 'Generating on-device response...',
                       style: theme.textTheme.labelSmall?.copyWith(
                         color: theme.colorScheme.primary,
                       ),
@@ -429,7 +524,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
 
             // Bottom prompt bar matching wireframe Page 3
-            _buildBottomPromptBar(context),
+            _buildBottomPromptBar(context, isModelAvailable: isModelAvailable),
           ],
         ),
       ),
@@ -542,7 +637,10 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildBottomPromptBar(BuildContext context) {
+  Widget _buildBottomPromptBar(
+    BuildContext context, {
+    required bool isModelAvailable,
+  }) {
     final theme = Theme.of(context);
 
     return Container(
@@ -566,7 +664,7 @@ class _ChatScreenState extends State<ChatScreen> {
               icon: const Icon(Icons.add_circle_outline),
               tooltip: 'Quick Prompts & Actions',
               color: theme.colorScheme.primary,
-              onPressed: _showQuickActionsMenu,
+              onPressed: isModelAvailable ? _showQuickActionsMenu : null,
             ),
             // Expanded text input "Type prompt..."
             Expanded(
@@ -582,26 +680,40 @@ class _ChatScreenState extends State<ChatScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 14),
                 child: TextField(
                   controller: _promptController,
+                  enabled: isModelAvailable,
                   minLines: 1,
                   maxLines: 4,
                   textInputAction: TextInputAction.send,
                   onSubmitted: (_) => _handleSend(),
-                  decoration: const InputDecoration(
-                    hintText: 'Type prompt...',
+                  decoration: InputDecoration(
+                    hintText: isModelAvailable
+                        ? 'Type prompt...'
+                        : 'Download model weights to chat...',
                     border: InputBorder.none,
                     isDense: true,
-                    contentPadding: EdgeInsets.symmetric(vertical: 10),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 10),
                   ),
                 ),
               ),
             ),
             const SizedBox(width: 6),
-            // Right (>) send button from wireframe
-            IconButton.filled(
-              icon: const Icon(Icons.send_rounded, size: 18),
-              tooltip: 'Send prompt',
-              onPressed: _isGenerating ? null : _handleSend,
-            ),
+            // Right send / stop button
+            if (_isGenerating)
+              IconButton.filled(
+                style: IconButton.styleFrom(
+                  backgroundColor: theme.colorScheme.error,
+                  foregroundColor: theme.colorScheme.onError,
+                ),
+                icon: const Icon(Icons.stop_rounded, size: 18),
+                tooltip: 'Stop generation',
+                onPressed: () => _chatService.stopGeneration(),
+              )
+            else
+              IconButton.filled(
+                icon: const Icon(Icons.send_rounded, size: 18),
+                tooltip: 'Send prompt',
+                onPressed: isModelAvailable ? _handleSend : null,
+              ),
           ],
         ),
       ),

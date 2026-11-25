@@ -1,3 +1,34 @@
+class GgufVariant {
+  final String fileName;
+  final String quantization;
+  final int? sizeBytes;
+  final String downloadUrl;
+
+  const GgufVariant({
+    required this.fileName,
+    required this.quantization,
+    this.sizeBytes,
+    required this.downloadUrl,
+  });
+
+  int get sizeMb =>
+      sizeBytes != null ? (sizeBytes! / (1024 * 1024)).round() : 0;
+
+  Map<String, dynamic> toJson() => {
+    'fileName': fileName,
+    'quantization': quantization,
+    'sizeBytes': sizeBytes,
+    'downloadUrl': downloadUrl,
+  };
+
+  factory GgufVariant.fromJson(Map<String, dynamic> json) => GgufVariant(
+    fileName: (json['fileName'] ?? '').toString(),
+    quantization: (json['quantization'] ?? 'GGUF').toString(),
+    sizeBytes: (json['sizeBytes'] as num?)?.toInt(),
+    downloadUrl: (json['downloadUrl'] ?? '').toString(),
+  );
+}
+
 class OpenModel {
   final String id;
   final String name;
@@ -10,6 +41,7 @@ class OpenModel {
   final String downloadUrl;
   final String description;
   final String repoUrl;
+  final List<GgufVariant> variants;
 
   OpenModel({
     required this.id,
@@ -23,6 +55,7 @@ class OpenModel {
     required this.downloadUrl,
     required this.description,
     required this.repoUrl,
+    this.variants = const [],
   });
 
   factory OpenModel.fromJson(Map<String, dynamic> json) {
@@ -48,6 +81,11 @@ class OpenModel {
       }
     }
 
+    final parsedVariants = (json['variants'] as List<dynamic>?)
+            ?.map((e) => GgufVariant.fromJson(e as Map<String, dynamic>))
+            .toList() ??
+        const <GgufVariant>[];
+
     return OpenModel(
       id: json['id'] ?? '',
       name: name,
@@ -60,7 +98,75 @@ class OpenModel {
       downloadUrl: downloadUrl,
       description: json['description'] ?? defaultDesc,
       repoUrl: json['repo_url'] ?? defaultRepo,
+      variants: parsedVariants,
     );
+  }
+
+  /// Extracts all downloadable `.gguf` variants from a Hugging Face `siblings` list.
+  static List<GgufVariant> parseGgufVariantsFromSiblings(
+    String repoId,
+    dynamic siblings,
+  ) {
+    if (siblings is! List || siblings.isEmpty) return const [];
+
+    final rawVariants = <GgufVariant>[];
+    final quantRegex = RegExp(
+      r'(Q[0-9]_[A-Z0-9_]+|IQ[0-9]_[A-Z0-9_]+|FP16|BF16|F16|F32)',
+      caseSensitive: false,
+    );
+
+    for (final s in siblings) {
+      if (s is Map && s['rfilename'] is String) {
+        final fname = s['rfilename'] as String;
+        if (fname.toLowerCase().endsWith('.gguf')) {
+          final size = (s['size'] as num?)?.toInt();
+          final m = quantRegex.firstMatch(fname);
+          final quant = m != null ? m.group(1)!.toUpperCase() : 'GGUF';
+          final encodedPath = fname
+              .split('/')
+              .map(Uri.encodeComponent)
+              .join('/');
+          rawVariants.add(
+            GgufVariant(
+              fileName: fname,
+              quantization: quant,
+              sizeBytes: size,
+              downloadUrl:
+                  'https://huggingface.co/$repoId/resolve/main/$encodedPath',
+            ),
+          );
+        }
+      }
+    }
+
+    if (rawVariants.isEmpty) return const [];
+
+    // Filter out vision-projector-only files if main model weights exist
+    final nonProjector = rawVariants
+        .where((v) => !v.fileName.toLowerCase().contains('mmproj'))
+        .toList();
+    final candidates = nonProjector.isNotEmpty ? nonProjector : rawVariants;
+
+    const preferredOrder = [
+      'Q4_K_M',
+      'Q4_0',
+      'Q5_K_M',
+      'Q4_K_S',
+      'Q3_K_M',
+      'Q8_0',
+      'IQ4_XS',
+    ];
+
+    candidates.sort((a, b) {
+      final idxA = preferredOrder.indexOf(a.quantization);
+      final idxB = preferredOrder.indexOf(b.quantization);
+      if (idxA != -1 && idxB != -1) return idxA.compareTo(idxB);
+      if (idxA != -1) return -1;
+      if (idxB != -1) return 1;
+      return a.fileName.compareTo(b.fileName);
+    });
+
+    return candidates;
   }
 
   factory OpenModel.fromHuggingFace(Map<String, dynamic> json) {
@@ -125,54 +231,10 @@ class OpenModel {
     }
 
     // Scan siblings for GGUF files and preferred quantization
-    String quantization = 'Q4_K_M';
-    String? ggufFileName;
-    int? detectedSizeBytes;
-
-    final siblings = json['siblings'];
-    if (siblings is List && siblings.isNotEmpty) {
-      final ggufFiles = <String>[];
-      final fileSizes = <String, int>{};
-      for (final s in siblings) {
-        if (s is Map && s['rfilename'] is String) {
-          final fname = s['rfilename'] as String;
-          if (fname.toLowerCase().endsWith('.gguf')) {
-            ggufFiles.add(fname);
-            if (s['size'] is num) {
-              fileSizes[fname] = (s['size'] as num).toInt();
-            }
-          }
-        }
-      }
-
-      if (ggufFiles.isNotEmpty) {
-        // Preferred quantization matching order
-        const preferredQuants = ['Q4_K_M', 'q4_k_m', 'Q4_0', 'q4_0', 'Q5_K_M', 'Q8_0', 'IQ4_XS'];
-        for (final q in preferredQuants) {
-          final match = ggufFiles.firstWhere(
-            (f) => f.contains(q),
-            orElse: () => '',
-          );
-          if (match.isNotEmpty) {
-            ggufFileName = match;
-            quantization = q.toUpperCase();
-            break;
-          }
-        }
-        ggufFileName ??= ggufFiles.first;
-
-        if (fileSizes.containsKey(ggufFileName)) {
-          detectedSizeBytes = fileSizes[ggufFileName];
-        }
-
-        // Extract quant from file name if not yet matched
-        final quantRegex = RegExp(r'(Q[0-9]_[A-Z0-9_]+|IQ[0-9]_[A-Z0-9_]+|FP16|BF16)', caseSensitive: false);
-        final m = quantRegex.firstMatch(ggufFileName);
-        if (m != null) {
-          quantization = m.group(1)!.toUpperCase();
-        }
-      }
-    }
+    final variants = parseGgufVariantsFromSiblings(rawId, json['siblings']);
+    final primaryVariant = variants.isNotEmpty ? variants.first : null;
+    final String quantization = primaryVariant?.quantization ?? 'Q4_K_M';
+    final int? detectedSizeBytes = primaryVariant?.sizeBytes;
 
     // Estimate or calculate download size in MB
     final double paramNum = double.tryParse(paramSize) ?? 1.0;
@@ -188,9 +250,9 @@ class OpenModel {
     final minRamGb = ((downloadSizeMb / 1024) * 1.5).ceil() + 1;
     final clampedRamGb = minRamGb.clamp(2, 64);
 
-    final downloadUrl = ggufFileName != null
-        ? 'https://huggingface.co/$rawId/resolve/main/$ggufFileName'
-        : 'https://huggingface.co/$rawId';
+    // Leave downloadUrl empty if no direct .gguf file was listed in siblings so
+    // ModelManagerService resolves the actual file list before downloading.
+    final downloadUrl = primaryVariant?.downloadUrl ?? '';
 
     final downloads = (json['downloads'] as num?)?.toInt() ?? 0;
     final likes = (json['likes'] as num?)?.toInt() ?? 0;
@@ -214,6 +276,7 @@ class OpenModel {
       downloadUrl: downloadUrl,
       description: description,
       repoUrl: 'https://huggingface.co/$rawId',
+      variants: variants,
     );
   }
 
@@ -231,6 +294,8 @@ class OpenModel {
     'download_url': downloadUrl,
     'description': description,
     'repo_url': repoUrl,
+    if (variants.isNotEmpty)
+      'variants': variants.map((v) => v.toJson()).toList(),
   };
 
   OpenModel copyWith({
@@ -245,6 +310,7 @@ class OpenModel {
     String? downloadUrl,
     String? description,
     String? repoUrl,
+    List<GgufVariant>? variants,
   }) {
     return OpenModel(
       id: id ?? this.id,
@@ -258,6 +324,7 @@ class OpenModel {
       downloadUrl: downloadUrl ?? this.downloadUrl,
       description: description ?? this.description,
       repoUrl: repoUrl ?? this.repoUrl,
+      variants: variants ?? this.variants,
     );
   }
 }

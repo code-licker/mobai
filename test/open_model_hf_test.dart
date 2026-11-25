@@ -72,7 +72,27 @@ void main() {
       expect(model.publisher, 'Google');
       expect(model.parameterSizeB, '2');
       expect(model.downloadSizeMb, greaterThan(0));
+      expect(model.downloadUrl, isEmpty);
+      expect(model.variants, isEmpty);
       expect(model.repoUrl, 'https://huggingface.co/custom-author/Gemma-2-2B-GGUF');
+    });
+
+    test('parses multiple GGUF variants and prioritizes Q4_K_M over Q8_0', () {
+      final hfJson = {
+        'id': 'bartowski/Qwen2.5-1.5B-Instruct-GGUF',
+        'author': 'bartowski',
+        'siblings': [
+          {'rfilename': 'mmproj-model-f16.gguf', 'size': 100000000},
+          {'rfilename': 'Qwen2.5-1.5B-Instruct-Q8_0.gguf', 'size': 1600000000},
+          {'rfilename': 'Qwen2.5-1.5B-Instruct-Q4_K_M.gguf', 'size': 980000000},
+        ],
+      };
+
+      final model = OpenModel.fromHuggingFace(hfJson);
+      expect(model.variants.length, 2);
+      expect(model.variants.first.quantization, 'Q4_K_M');
+      expect(model.variants.last.quantization, 'Q8_0');
+      expect(model.quantization, 'Q4_K_M');
     });
   });
 }

@@ -29,10 +29,16 @@ class ChatMessage {
 }
 
 class ChatSession {
+  static const String defaultSystemPrompt =
+      'You are a helpful, accurate, and concise AI assistant running locally on-device.';
+
   final String id;
   String title;
   final String modelId;
   final String modelName;
+  String? modelFilePath;
+  double temperature;
+  String systemPrompt;
   final DateTime createdAt;
   DateTime updatedAt;
   final List<ChatMessage> messages;
@@ -42,6 +48,9 @@ class ChatSession {
     required this.title,
     required this.modelId,
     required this.modelName,
+    this.modelFilePath,
+    this.temperature = 0.7,
+    this.systemPrompt = defaultSystemPrompt,
     required this.createdAt,
     required this.updatedAt,
     required this.messages,
@@ -57,6 +66,9 @@ class ChatSession {
     'title': title,
     'modelId': modelId,
     'modelName': modelName,
+    if (modelFilePath != null) 'modelFilePath': modelFilePath,
+    'temperature': temperature,
+    'systemPrompt': systemPrompt,
     'createdAt': createdAt.toIso8601String(),
     'updatedAt': updatedAt.toIso8601String(),
     'messages': messages.map((m) => m.toJson()).toList(),
@@ -67,6 +79,11 @@ class ChatSession {
     title: json['title'] ?? 'Chat',
     modelId: json['modelId'] ?? '',
     modelName: json['modelName'] ?? 'AI Model',
+    modelFilePath: json['modelFilePath'] as String?,
+    temperature: (json['temperature'] as num?)?.toDouble() ?? 0.7,
+    systemPrompt: (json['systemPrompt'] as String?)?.isNotEmpty == true
+        ? json['systemPrompt'] as String
+        : defaultSystemPrompt,
     createdAt: json['createdAt'] != null
         ? DateTime.tryParse(json['createdAt']) ?? DateTime.now()
         : DateTime.now(),

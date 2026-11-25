@@ -2,7 +2,10 @@ import 'package:material_ui/material_ui.dart';
 import 'package:mobai/models/chat_session.dart';
 import 'package:mobai/screens/chat_screen.dart';
 import 'package:mobai/screens/model_selector_screen.dart';
+import 'package:mobai/screens/widgets/storage_setup_dialog.dart';
 import 'package:mobai/services/chat_session_service.dart';
+import 'package:mobai/services/model_manager_service.dart';
+import 'package:mobai/services/storage_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -13,17 +16,33 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final ChatSessionService _chatService = ChatSessionService();
+  final StorageService _storageService = StorageService();
+  final ModelManagerService _modelManager = ModelManagerService();
   String _selectedFilter = 'all'; // 'all' or 'history'
+  bool _promptShownThisSession = false;
 
   @override
   void initState() {
     super.initState();
     _chatService.addListener(_onServiceUpdate);
+    _storageService.addListener(_onServiceUpdate);
+    _modelManager.addListener(_onServiceUpdate);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted &&
+          !_promptShownThisSession &&
+          _storageService.isInitialized &&
+          !_storageService.isConfigured) {
+        _promptShownThisSession = true;
+        showFirstLaunchStoragePrompt(context);
+      }
+    });
   }
 
   @override
   void dispose() {
     _chatService.removeListener(_onServiceUpdate);
+    _storageService.removeListener(_onServiceUpdate);
+    _modelManager.removeListener(_onServiceUpdate);
     super.dispose();
   }
 
@@ -265,6 +284,24 @@ class _HomeScreenState extends State<HomeScreen> {
                 _navigateToModelSelector();
               },
             ),
+            ListTile(
+              leading: Icon(Icons.folder_copy_outlined, color: theme.colorScheme.onSurfaceVariant),
+              title: const Text('Storage location', style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: _storageService.isInitialized
+                  ? Text(
+                      _storageService.rootPath,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11),
+                    )
+                  : null,
+              onTap: () {
+                Navigator.pop(context);
+                if (_storageService.isInitialized) {
+                  showStorageSettingsSheet(context);
+                }
+              },
+            ),
 
             const Spacer(),
             const Divider(),
@@ -407,32 +444,66 @@ class _HomeScreenState extends State<HomeScreen> {
 
                 const SizedBox(height: 10),
 
-                // Model tag pill
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.auto_awesome,
-                        size: 11,
-                        color: theme.colorScheme.primary,
+                // Model tag pill + missing-file warning if model is not on disk
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(6),
                       ),
-                      const SizedBox(width: 4),
-                      Text(
-                        session.modelName,
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: theme.colorScheme.primary,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.auto_awesome,
+                            size: 11,
+                            color: theme.colorScheme.primary,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            session.modelName,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: theme.colorScheme.primary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (_chatService.resolveModelFilePath(session) == null)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.errorContainer.withAlpha(140),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.warning_amber_rounded,
+                              size: 11,
+                              color: theme.colorScheme.error,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Model missing',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: theme.colorScheme.error,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ],
-                  ),
+                  ],
                 ),
               ],
             ),
