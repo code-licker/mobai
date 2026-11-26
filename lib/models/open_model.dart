@@ -3,12 +3,14 @@ class GgufVariant {
   final String quantization;
   final int? sizeBytes;
   final String downloadUrl;
+  final bool isAuxiliary;
 
   const GgufVariant({
     required this.fileName,
     required this.quantization,
     this.sizeBytes,
     required this.downloadUrl,
+    this.isAuxiliary = false,
   });
 
   int get sizeMb =>
@@ -19,14 +21,21 @@ class GgufVariant {
     'quantization': quantization,
     'sizeBytes': sizeBytes,
     'downloadUrl': downloadUrl,
+    'isAuxiliary': isAuxiliary,
   };
 
-  factory GgufVariant.fromJson(Map<String, dynamic> json) => GgufVariant(
-    fileName: (json['fileName'] ?? '').toString(),
-    quantization: (json['quantization'] ?? 'GGUF').toString(),
-    sizeBytes: (json['sizeBytes'] as num?)?.toInt(),
-    downloadUrl: (json['downloadUrl'] ?? '').toString(),
-  );
+  factory GgufVariant.fromJson(Map<String, dynamic> json) {
+    final fileName = (json['fileName'] ?? '').toString();
+    return GgufVariant(
+      fileName: fileName,
+      quantization: (json['quantization'] ?? 'GGUF').toString(),
+      sizeBytes: (json['sizeBytes'] as num?)?.toInt(),
+      downloadUrl: (json['downloadUrl'] ?? '').toString(),
+      isAuxiliary:
+          (json['isAuxiliary'] as bool?) ??
+          OpenModel.isAuxiliaryGgufFile(fileName),
+    );
+  }
 }
 
 class OpenModel {
@@ -42,6 +51,9 @@ class OpenModel {
   final String description;
   final String repoUrl;
   final List<GgufVariant> variants;
+  final DateTime? createdAt;
+  final int downloads;
+  final int likes;
 
   OpenModel({
     required this.id,
@@ -56,7 +68,17 @@ class OpenModel {
     required this.description,
     required this.repoUrl,
     this.variants = const [],
+    this.createdAt,
+    this.downloads = 0,
+    this.likes = 0,
   });
+
+  /// Returns true for auxiliary GGUFs (MTP speculative heads, mmproj vision
+  /// projectors, draft weights) that cannot run standalone chat inference.
+  static bool isAuxiliaryGgufFile(String fileName) {
+    final lower = fileName.split(RegExp(r'[/\\]')).last.toLowerCase();
+    return RegExp(r'(^|[-_.])(mmproj|mtp|draft)([-_.]|$)').hasMatch(lower);
+  }
 
   factory OpenModel.fromJson(Map<String, dynamic> json) {
     final name = json['name'] ?? '';
@@ -99,6 +121,11 @@ class OpenModel {
       description: json['description'] ?? defaultDesc,
       repoUrl: json['repo_url'] ?? defaultRepo,
       variants: parsedVariants,
+      createdAt: json['created_at'] != null
+          ? DateTime.tryParse(json['created_at'].toString())
+          : null,
+      downloads: (json['downloads'] as num?)?.toInt() ?? 0,
+      likes: (json['likes'] as num?)?.toInt() ?? 0,
     );
   }
 
@@ -133,6 +160,7 @@ class OpenModel {
               sizeBytes: size,
               downloadUrl:
                   'https://huggingface.co/$repoId/resolve/main/$encodedPath',
+              isAuxiliary: isAuxiliaryGgufFile(fname),
             ),
           );
         }
@@ -141,11 +169,11 @@ class OpenModel {
 
     if (rawVariants.isEmpty) return const [];
 
-    // Filter out vision-projector-only files if main model weights exist
-    final nonProjector = rawVariants
-        .where((v) => !v.fileName.toLowerCase().contains('mmproj'))
+    // Filter out auxiliary files (mmproj, mtp-, draft-) if main model weights exist
+    final primaryWeights = rawVariants
+        .where((v) => !v.isAuxiliary)
         .toList();
-    final candidates = nonProjector.isNotEmpty ? nonProjector : rawVariants;
+    final candidates = primaryWeights.isNotEmpty ? primaryWeights : rawVariants;
 
     const preferredOrder = [
       'Q4_K_M',
@@ -256,6 +284,8 @@ class OpenModel {
 
     final downloads = (json['downloads'] as num?)?.toInt() ?? 0;
     final likes = (json['likes'] as num?)?.toInt() ?? 0;
+    final rawDate = json['createdAt'] ?? json['lastModified'];
+    final createdAt = rawDate != null ? DateTime.tryParse(rawDate.toString()) : null;
     String stats = '';
     if (downloads > 0) {
       stats += downloads >= 1000 ? ' ${(downloads / 1000).toStringAsFixed(1)}k downloads •' : ' $downloads downloads •';
@@ -277,6 +307,9 @@ class OpenModel {
       description: description,
       repoUrl: 'https://huggingface.co/$rawId',
       variants: variants,
+      createdAt: createdAt,
+      downloads: downloads,
+      likes: likes,
     );
   }
 
@@ -296,6 +329,9 @@ class OpenModel {
     'repo_url': repoUrl,
     if (variants.isNotEmpty)
       'variants': variants.map((v) => v.toJson()).toList(),
+    if (createdAt != null) 'created_at': createdAt!.toIso8601String(),
+    'downloads': downloads,
+    'likes': likes,
   };
 
   OpenModel copyWith({
@@ -311,6 +347,9 @@ class OpenModel {
     String? description,
     String? repoUrl,
     List<GgufVariant>? variants,
+    DateTime? createdAt,
+    int? downloads,
+    int? likes,
   }) {
     return OpenModel(
       id: id ?? this.id,
@@ -325,6 +364,9 @@ class OpenModel {
       description: description ?? this.description,
       repoUrl: repoUrl ?? this.repoUrl,
       variants: variants ?? this.variants,
+      createdAt: createdAt ?? this.createdAt,
+      downloads: downloads ?? this.downloads,
+      likes: likes ?? this.likes,
     );
   }
 }

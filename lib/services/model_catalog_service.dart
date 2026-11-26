@@ -4,6 +4,28 @@ import 'package:flutter/services.dart';
 import 'package:mobai/models/open_model.dart';
 import 'package:mobai/services/hf_url_parser.dart';
 
+enum ModelSortOption {
+  popular('Popular'),
+  latest('Latest'),
+  sizeAsc('Smallest size'),
+  sizeDesc('Largest size'),
+  paramsAsc('Smallest params'),
+  paramsDesc('Largest params');
+
+  final String label;
+  const ModelSortOption(this.label);
+}
+
+class ModelCatalogPage {
+  final List<OpenModel> models;
+  final String? nextPageUrl;
+
+  const ModelCatalogPage({
+    required this.models,
+    this.nextPageUrl,
+  });
+}
+
 class ModelCatalogService {
   static const String _huggingFaceApiUrl = "https://huggingface.co/api/models";
   static const String _localAssetPath = "assets/json/supported_models.json";
@@ -24,45 +46,88 @@ class ModelCatalogService {
              ),
            );
 
-  /// Fetches models directly from Hugging Face API.
-  /// If [searchQuery] is provided, searches models matching the query on Hugging Face.
-  /// Falls back to local bundled models only if offline and no query was specified.
-  Future<List<OpenModel>> fetchModels({String? searchQuery, int limit = 35}) async {
+  /// Fetches a single page of text-generation GGUF models from Hugging Face
+  /// (or follows a `Link` rel="next" cursor URL in [pageUrl]).
+  Future<ModelCatalogPage> fetchModelsPage({
+    String? searchQuery,
+    ModelSortOption sortOption = ModelSortOption.popular,
+    String? pageUrl,
+    int limit = 35,
+  }) async {
     try {
-      return await _fetchModelsFromHuggingFace(
+      return await _fetchModelsPageFromHuggingFace(
         searchQuery: searchQuery?.trim(),
+        sortOption: sortOption,
+        pageUrl: pageUrl,
         limit: limit,
       );
     } catch (e) {
-      // If user performed an active search, rethrow so the UI can show the search error
-      if (searchQuery != null && searchQuery.trim().isNotEmpty) {
+      if ((searchQuery != null && searchQuery.trim().isNotEmpty) ||
+          pageUrl != null) {
         rethrow;
       }
-      // For initial catalog load when offline, fallback to local asset
-      return await _fetchModelsFromLocal();
+      final fallback = await _fetchModelsFromLocal();
+      return ModelCatalogPage(models: fallback);
     }
   }
 
-  Future<List<OpenModel>> _fetchModelsFromHuggingFace({
+  /// Fetches models directly from Hugging Face API.
+  /// If [searchQuery] is provided, searches models matching the query on Hugging Face.
+  /// Falls back to local bundled models only if offline and no query was specified.
+  Future<List<OpenModel>> fetchModels({
     String? searchQuery,
+    ModelSortOption sortOption = ModelSortOption.popular,
     int limit = 35,
   }) async {
-    final Map<String, dynamic> queryParams = {
-      'filter': 'gguf',
-      'sort': 'downloads',
-      'direction': -1,
-      'limit': limit,
-      'full': true,
-    };
-
-    if (searchQuery != null && searchQuery.isNotEmpty) {
-      queryParams['search'] = searchQuery;
-    }
-
-    final response = await _dio.get(
-      apiBaseUrl,
-      queryParameters: queryParams,
+    final page = await fetchModelsPage(
+      searchQuery: searchQuery,
+      sortOption: sortOption,
+      limit: limit,
     );
+    return page.models;
+  }
+
+  static String? parseNextLinkHeader(Headers headers) {
+    final linkValues = headers['link'] ?? headers['Link'];
+    if (linkValues == null || linkValues.isEmpty) return null;
+    final joined = linkValues.join(', ');
+    final match = RegExp(
+      r'<([^>]+)>\s*;\s*rel="?next"?',
+      caseSensitive: false,
+    ).firstMatch(joined);
+    return match?.group(1);
+  }
+
+  Future<ModelCatalogPage> _fetchModelsPageFromHuggingFace({
+    String? searchQuery,
+    ModelSortOption sortOption = ModelSortOption.popular,
+    String? pageUrl,
+    int limit = 35,
+  }) async {
+    final Response<dynamic> response;
+    if (pageUrl != null && pageUrl.isNotEmpty) {
+      response = await _dio.get(pageUrl);
+    } else {
+      final serverSort =
+          sortOption == ModelSortOption.latest ? 'createdAt' : 'downloads';
+      final Map<String, dynamic> queryParams = {
+        'filter': 'gguf',
+        'pipeline_tag': 'text-generation',
+        'sort': serverSort,
+        'direction': -1,
+        'limit': limit,
+        'full': true,
+      };
+
+      if (searchQuery != null && searchQuery.isNotEmpty) {
+        queryParams['search'] = searchQuery;
+      }
+
+      response = await _dio.get(
+        apiBaseUrl,
+        queryParameters: queryParams,
+      );
+    }
 
     if (response.statusCode == 200) {
       final dynamic rawData = response.data;
@@ -73,7 +138,6 @@ class ModelCatalogService {
         if (item is Map<String, dynamic>) {
           try {
             final model = OpenModel.fromHuggingFace(item);
-            // Ensure valid model with an id
             if (model.id.isNotEmpty) {
               models.add(model);
             }
@@ -82,9 +146,14 @@ class ModelCatalogService {
           }
         }
       }
-      return models;
+      return ModelCatalogPage(
+        models: models,
+        nextPageUrl: parseNextLinkHeader(response.headers),
+      );
     } else {
-      throw Exception('Failed to load models from Hugging Face (Status: ${response.statusCode})');
+      throw Exception(
+        'Failed to load models from Hugging Face (Status: ${response.statusCode})',
+      );
     }
   }
 

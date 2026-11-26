@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:llamadart/llamadart.dart' as llama;
 import 'package:mobai/models/chat_session.dart';
+import 'package:mobai/models/open_model.dart';
 
 /// Manages on-device GGUF inference via `llamadart`.
 /// Keeps at most one model loaded in memory at a time to prevent mobile OOM.
@@ -24,12 +25,23 @@ class LocalInferenceService extends ChangeNotifier {
   bool get isGenerating => _isGenerating;
 
   /// Loads [modelPath] into memory, unloading any previously loaded model first.
+  /// Retries once on CPU with a smaller context window if GPU/default context
+  /// creation fails on mobile/emulator hardware.
   Future<void> ensureModelLoaded(String modelPath) async {
     final file = File(modelPath);
     if (!await file.exists()) {
       throw FileSystemException(
         'Downloaded model file not found at $modelPath',
         modelPath,
+      );
+    }
+
+    final fileName = file.uri.pathSegments.isNotEmpty
+        ? file.uri.pathSegments.last
+        : modelPath;
+    if (OpenModel.isAuxiliaryGgufFile(fileName)) {
+      throw llama.LlamaModelException(
+        'Cannot run "$fileName" standalone: it is an auxiliary MTP/projector/draft GGUF file, not full model weights. Please download the main model .gguf file instead.',
       );
     }
 
@@ -46,14 +58,36 @@ class LocalInferenceService extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final engine = await llama.LlamaEngine.load(
-        llama.LlamaModel(llama.ModelSource.path(modelPath)),
-        params: const llama.ModelParams(
-          contextSize: 2048,
-        ),
-      );
-      _engine = engine;
-      _loadedModelPath = modelPath;
+      try {
+        final engine = await llama.LlamaEngine.load(
+          llama.LlamaModel(llama.ModelSource.path(modelPath)),
+          params: const llama.ModelParams(
+            contextSize: 2048,
+          ),
+        );
+        _engine = engine;
+        _loadedModelPath = modelPath;
+      } catch (primaryError) {
+        debugPrint(
+          'Primary model load failed ($primaryError); retrying with CPU/1024 context...',
+        );
+        try {
+          final fallbackEngine = await llama.LlamaEngine.load(
+            llama.LlamaModel(llama.ModelSource.path(modelPath)),
+            params: const llama.ModelParams(
+              contextSize: 1024,
+              device: llama.ComputeDevice.cpu,
+              gpuLayers: 0,
+            ),
+          );
+          _engine = fallbackEngine;
+          _loadedModelPath = modelPath;
+        } catch (fallbackError) {
+          throw llama.LlamaModelException(
+            'Could not load "$fileName" on this device ($fallbackError). The model may require more RAM than available or use an unsupported architecture.',
+          );
+        }
+      }
     } finally {
       _isModelLoading = false;
       notifyListeners();

@@ -81,9 +81,12 @@ class ModelManagerService extends ChangeNotifier {
   List<OpenModel> _models = [];
   final List<OpenModel> _customModels = [];
   bool _isLoading = false;
+  bool _isLoadingMore = false;
+  String? _nextPageUrl;
   String? _error;
   String _searchQuery = '';
   ModelFilterCriteria _filterCriteria = ModelFilterCriteria.initial();
+  ModelSortOption _sortOption = ModelSortOption.popular;
 
   // Downloaded models indexed by modelId
   final Map<String, DownloadedModel> _downloadedModels = {};
@@ -93,8 +96,28 @@ class ModelManagerService extends ChangeNotifier {
 
   List<OpenModel> get models => List.unmodifiable(_models);
 
+  double get effectiveMaxSizeMb =>
+      ModelFilterCriteria.effectiveMaxSizeMbFor(_models);
+  double get effectiveMaxParamsB =>
+      ModelFilterCriteria.effectiveMaxParamsBFor(_models);
+  double get effectiveMaxRamGb =>
+      ModelFilterCriteria.effectiveMaxRamGbFor(_models);
+
   List<OpenModel> get filteredModels {
-    return _models.where((m) => _filterCriteria.matches(m)).toList();
+    final maxS = effectiveMaxSizeMb;
+    final maxP = effectiveMaxParamsB;
+    final maxR = effectiveMaxRamGb;
+    final list = _models
+        .where(
+          (m) => _filterCriteria.matches(
+            m,
+            maxSizeMb: maxS,
+            maxParamsB: maxP,
+            maxRamGb: maxR,
+          ),
+        )
+        .toList();
+    return _applyClientSort(list);
   }
 
   /// Models that are either downloaded in `MobAI/models` or added as custom URLs.
@@ -120,7 +143,20 @@ class ModelManagerService extends ChangeNotifier {
       }
     }
 
-    return result.where((m) => _filterCriteria.matches(m)).toList();
+    final maxS = ModelFilterCriteria.effectiveMaxSizeMbFor(result);
+    final maxP = ModelFilterCriteria.effectiveMaxParamsBFor(result);
+    final maxR = ModelFilterCriteria.effectiveMaxRamGbFor(result);
+    final filtered = result
+        .where(
+          (m) => _filterCriteria.matches(
+            m,
+            maxSizeMb: maxS,
+            maxParamsB: maxP,
+            maxRamGb: maxR,
+          ),
+        )
+        .toList();
+    return _applyClientSort(filtered);
   }
 
   bool isCustomModel(String modelId) =>
@@ -130,9 +166,12 @@ class ModelManagerService extends ChangeNotifier {
       List.unmodifiable(_downloadedModels.values);
 
   bool get isLoading => _isLoading;
+  bool get isLoadingMore => _isLoadingMore;
+  bool get hasMoreModels => _nextPageUrl != null;
   String? get error => _error;
   String get searchQuery => _searchQuery;
   ModelFilterCriteria get filterCriteria => _filterCriteria;
+  ModelSortOption get sortOption => _sortOption;
 
   List<String> get availableProviders {
     final providers = <String>{};
@@ -187,6 +226,9 @@ class ModelManagerService extends ChangeNotifier {
     _downloadStates.clear();
     _customModels.clear();
     _models = [];
+    _nextPageUrl = null;
+    _isLoadingMore = false;
+    _sortOption = ModelSortOption.popular;
   }
 
   File get _indexFile => File(
@@ -377,12 +419,15 @@ class ModelManagerService extends ChangeNotifier {
     _searchQuery = query.trim();
     _isLoading = true;
     _error = null;
+    _nextPageUrl = null;
     notifyListeners();
 
     try {
-      final fetched = await _catalogService.fetchModels(
+      final page = await _catalogService.fetchModelsPage(
         searchQuery: _searchQuery.isNotEmpty ? _searchQuery : null,
+        sortOption: _sortOption,
       );
+      _nextPageUrl = page.nextPageUrl;
 
       // Preserve custom & locally detected models that match query
       final relevantCustom = _customModels.where((c) {
@@ -393,12 +438,98 @@ class ModelManagerService extends ChangeNotifier {
             c.id.toLowerCase().contains(q);
       }).toList();
 
-      _models = [...relevantCustom, ...fetched];
+      final combined = <OpenModel>[...relevantCustom];
+      final seenIds = combined.map((m) => m.id).toSet();
+      for (final m in page.models) {
+        if (seenIds.add(m.id)) {
+          combined.add(m);
+        }
+      }
+      _models = combined;
     } catch (e) {
       _error = e.toString();
     } finally {
       _isLoading = false;
       notifyListeners();
+    }
+  }
+
+  /// Loads the next cursor page of Hugging Face models if available.
+  Future<void> loadMoreModels() async {
+    if (_isLoading || _isLoadingMore || _nextPageUrl == null) return;
+    _isLoadingMore = true;
+    notifyListeners();
+
+    try {
+      final page = await _catalogService.fetchModelsPage(
+        pageUrl: _nextPageUrl,
+        sortOption: _sortOption,
+      );
+      _nextPageUrl = page.nextPageUrl;
+      final existingIds = _models.map((m) => m.id).toSet();
+      final additions = page.models
+          .where((m) => existingIds.add(m.id))
+          .toList();
+      if (additions.isNotEmpty) {
+        _models = [..._models, ...additions];
+      }
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _isLoadingMore = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> setSortOption(ModelSortOption option) async {
+    if (_sortOption == option) return;
+    final previous = _sortOption;
+    _sortOption = option;
+
+    // Server-side HF sorts re-fetch from page 1 unless switching within client sorts
+    final needsServerFetch =
+        option == ModelSortOption.latest ||
+        (option == ModelSortOption.popular &&
+            previous != ModelSortOption.popular);
+
+    if (needsServerFetch) {
+      await searchModels(_searchQuery);
+    } else {
+      notifyListeners();
+    }
+  }
+
+  void togglePhoneReadyOnly() {
+    _filterCriteria = _filterCriteria.copyWith(
+      phoneReadyOnly: !_filterCriteria.phoneReadyOnly,
+    );
+    notifyListeners();
+  }
+
+  List<OpenModel> _applyClientSort(List<OpenModel> input) {
+    final list = List<OpenModel>.from(input);
+    switch (_sortOption) {
+      case ModelSortOption.popular:
+        return list;
+      case ModelSortOption.latest:
+        list.sort((a, b) {
+          final da = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+          final db = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+          return db.compareTo(da);
+        });
+        return list;
+      case ModelSortOption.sizeAsc:
+        list.sort((a, b) => a.downloadSizeMb.compareTo(b.downloadSizeMb));
+        return list;
+      case ModelSortOption.sizeDesc:
+        list.sort((a, b) => b.downloadSizeMb.compareTo(a.downloadSizeMb));
+        return list;
+      case ModelSortOption.paramsAsc:
+        list.sort((a, b) => a.paramSizeNum.compareTo(b.paramSizeNum));
+        return list;
+      case ModelSortOption.paramsDesc:
+        list.sort((a, b) => b.paramSizeNum.compareTo(a.paramSizeNum));
+        return list;
     }
   }
 
@@ -464,6 +595,13 @@ class ModelManagerService extends ChangeNotifier {
     if (!isValidGguf) {
       throw const FormatException(
         'Selected file is not a valid GGUF model (missing GGUF header).',
+      );
+    }
+
+    final rawBaseName = _basename(sourcePath);
+    if (OpenModel.isAuxiliaryGgufFile(rawBaseName)) {
+      throw FormatException(
+        '"$rawBaseName" is an auxiliary MTP/projector/draft file and cannot run standalone chat.',
       );
     }
 

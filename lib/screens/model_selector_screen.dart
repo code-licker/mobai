@@ -5,7 +5,9 @@ import 'package:mobai/screens/chat_screen.dart';
 import 'package:mobai/screens/widgets/add_custom_model_dialog.dart';
 import 'package:mobai/screens/widgets/model_filter_bottom_sheet.dart';
 import 'package:mobai/services/chat_session_service.dart';
+import 'package:mobai/services/model_catalog_service.dart';
 import 'package:mobai/services/model_manager_service.dart';
+import 'package:mobai/utils/format_utils.dart';
 
 class ModelSelectorScreen extends StatefulWidget {
   const ModelSelectorScreen({super.key});
@@ -18,6 +20,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
   final ModelManagerService _managerService = ModelManagerService();
   final ChatSessionService _chatService = ChatSessionService();
   final TextEditingController _searchController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
   Timer? _debounceTimer;
 
   String? _selectedModelId;
@@ -44,6 +47,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
   void initState() {
     super.initState();
     _managerService.addListener(_onServiceUpdate);
+    _scrollController.addListener(_onScroll);
     if (_managerService.models.isEmpty) {
       _managerService.loadModels();
     } else {
@@ -57,9 +61,20 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
   @override
   void dispose() {
     _debounceTimer?.cancel();
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
     _searchController.dispose();
     _managerService.removeListener(_onServiceUpdate);
     super.dispose();
+  }
+
+  void _onScroll() {
+    if (_showMyModelsOnly || !_scrollController.hasClients) return;
+    if (_scrollController.position.extentAfter < 300 &&
+        _managerService.hasMoreModels &&
+        !_managerService.isLoadingMore) {
+      _managerService.loadMoreModels();
+    }
   }
 
   void _onServiceUpdate() {
@@ -102,12 +117,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
     );
   }
 
-  String _formatMb(double mb) {
-    if (mb >= 1024) {
-      return '${(mb / 1024).toStringAsFixed(1)} GB';
-    }
-    return '${mb.toInt()} MB';
-  }
+  String _formatMb(double mb) => formatSizeMb(mb);
 
   Color _getPublisherColor(String publisher) {
     switch (publisher.toLowerCase()) {
@@ -289,9 +299,34 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                                 : 'Size unknown';
                             return ListTile(
                               contentPadding: EdgeInsets.zero,
-                              title: Text(
-                                variant.quantization,
-                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              title: Row(
+                                children: [
+                                  Text(
+                                    variant.quantization,
+                                    style: const TextStyle(fontWeight: FontWeight.bold),
+                                  ),
+                                  if (variant.isAuxiliary) ...[
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: theme.colorScheme.errorContainer,
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        'Auxiliary (not standalone)',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w600,
+                                          color: theme.colorScheme.onErrorContainer,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
                               ),
                               subtitle: Text(
                                 '${variant.fileName} • $sizeLabel',
@@ -300,15 +335,19 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                                 style: const TextStyle(fontSize: 12),
                               ),
                               trailing: FilledButton.tonal(
-                                onPressed: () {
-                                  Navigator.pop(sheetContext);
-                                  _managerService.downloadModel(
-                                    model.id,
-                                    model: model,
-                                    variant: variant,
-                                  );
-                                },
-                                child: const Text('Download'),
+                                onPressed: variant.isAuxiliary
+                                    ? null
+                                    : () {
+                                        Navigator.pop(sheetContext);
+                                        _managerService.downloadModel(
+                                          model.id,
+                                          model: model,
+                                          variant: variant,
+                                        );
+                                      },
+                                child: Text(
+                                  variant.isAuxiliary ? 'Unsupported' : 'Download',
+                                ),
                               ),
                             );
                           },
@@ -612,38 +651,112 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
               child: _buildSearchBar(context),
             ),
 
-            // Catalog Scope Toggle: All vs My Models (Downloaded & Custom) + Rescan
+            // Catalog Scope, Phone-Ready Toggle, Sort & Rescan
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 12, 4),
               child: Row(
                 children: [
-                  ChoiceChip(
-                    label: const Text('All', style: TextStyle(fontSize: 12)),
-                    selected: !_showMyModelsOnly,
-                    visualDensity: VisualDensity.compact,
-                    onSelected: (_) {
-                      setState(() {
-                        _showMyModelsOnly = false;
-                        _onServiceUpdate();
-                      });
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                  ChoiceChip(
-                    label: Text(
-                      'My Models ($myCount)',
-                      style: const TextStyle(fontSize: 12),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          ChoiceChip(
+                            label: const Text('All', style: TextStyle(fontSize: 12)),
+                            selected: !_showMyModelsOnly,
+                            visualDensity: VisualDensity.compact,
+                            onSelected: (_) {
+                              setState(() {
+                                _showMyModelsOnly = false;
+                                _onServiceUpdate();
+                              });
+                            },
+                          ),
+                          const SizedBox(width: 6),
+                          ChoiceChip(
+                            label: Text(
+                              'My Models ($myCount)',
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                            selected: _showMyModelsOnly,
+                            visualDensity: VisualDensity.compact,
+                            onSelected: (_) {
+                              setState(() {
+                                _showMyModelsOnly = true;
+                                _onServiceUpdate();
+                              });
+                            },
+                          ),
+                          const SizedBox(width: 6),
+                          FilterChip(
+                            label: const Text(
+                              'Phone <=8B',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                            selected: filterCriteria.phoneReadyOnly,
+                            visualDensity: VisualDensity.compact,
+                            onSelected: (_) =>
+                                _managerService.togglePhoneReadyOnly(),
+                          ),
+                          const SizedBox(width: 6),
+                          PopupMenuButton<ModelSortOption>(
+                            tooltip: 'Sort models',
+                            initialValue: _managerService.sortOption,
+                            onSelected: (option) =>
+                                _managerService.setSortOption(option),
+                            itemBuilder: (context) => ModelSortOption.values
+                                .map(
+                                  (opt) => PopupMenuItem<ModelSortOption>(
+                                    value: opt,
+                                    child: Row(
+                                      children: [
+                                        if (_managerService.sortOption == opt)
+                                          Icon(
+                                            Icons.check_rounded,
+                                            size: 16,
+                                            color: theme.colorScheme.primary,
+                                          )
+                                        else
+                                          const SizedBox(width: 16),
+                                        const SizedBox(width: 8),
+                                        Text(opt.label),
+                                      ],
+                                    ),
+                                  ),
+                                )
+                                .toList(),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: theme.colorScheme.surfaceContainerHigh,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: theme.colorScheme.outlineVariant,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.sort_rounded, size: 15),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    _managerService.sortOption.label,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    selected: _showMyModelsOnly,
-                    visualDensity: VisualDensity.compact,
-                    onSelected: (_) {
-                      setState(() {
-                        _showMyModelsOnly = true;
-                        _onServiceUpdate();
-                      });
-                    },
                   ),
-                  const Spacer(),
                   IconButton(
                     icon: const Icon(Icons.sync_rounded, size: 19),
                     tooltip: 'Rescan MobAI/models folder',
@@ -668,7 +781,11 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
             ),
 
             // Active Filter Chips Bar (scrollable horizontally)
-            if (filterCriteria.isActive)
+            if (filterCriteria.isActiveWithBounds(
+              maxSizeMb: _managerService.effectiveMaxSizeMb,
+              maxParamsB: _managerService.effectiveMaxParamsB,
+              maxRamGb: _managerService.effectiveMaxRamGb,
+            ))
               _buildActiveFiltersBar(context),
 
             // Error Banner (if any)
@@ -765,9 +882,30 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                       ),
                     )
                   : ListView.builder(
+                      controller: _scrollController,
                       padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
-                      itemCount: models.length,
+                      itemCount: models.length +
+                          (!_showMyModelsOnly &&
+                                  (_managerService.hasMoreModels ||
+                                      _managerService.isLoadingMore)
+                              ? 1
+                              : 0),
                       itemBuilder: (context, index) {
+                        if (index >= models.length) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            child: Center(
+                              child: _managerService.isLoadingMore
+                                  ? const CircularProgressIndicator()
+                                  : OutlinedButton.icon(
+                                      icon: const Icon(Icons.expand_more_rounded),
+                                      label: const Text('Load more models'),
+                                      onPressed: () =>
+                                          _managerService.loadMoreModels(),
+                                    ),
+                            ),
+                          );
+                        }
                         final model = models[index];
                         final isSelected = _selectedModelId == model.id;
                         final isDownloaded = _managerService.isModelDownloaded(
@@ -875,9 +1013,13 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                     : theme.colorScheme.onSurfaceVariant,
               ),
               icon: Badge(
-                isLabelVisible: criteria.isActive,
+                isLabelVisible: criteria.isActiveWithBounds(
+                  maxSizeMb: _managerService.effectiveMaxSizeMb,
+                  maxParamsB: _managerService.effectiveMaxParamsB,
+                  maxRamGb: _managerService.effectiveMaxRamGb,
+                ),
                 label: Text(
-                  '${criteria.activeFilterCount}',
+                  '${criteria.activeFilterCountWithBounds(maxSizeMb: _managerService.effectiveMaxSizeMb, maxParamsB: _managerService.effectiveMaxParamsB, maxRamGb: _managerService.effectiveMaxRamGb)}',
                   style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
                 ),
                 child: const Icon(Icons.tune_rounded, size: 20),
@@ -893,13 +1035,27 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
 
   Widget _buildActiveFiltersBar(BuildContext context) {
     final criteria = _managerService.filterCriteria;
+    final maxSize = _managerService.effectiveMaxSizeMb;
+    final maxParams = _managerService.effectiveMaxParamsB;
+    final maxRam = _managerService.effectiveMaxRamGb;
 
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Row(
         children: [
-          if (criteria.isSizeFilterActive && criteria.sizeRangeMb != null)
+          if (criteria.phoneReadyOnly)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: InputChip(
+                label: const Text('Phone <=8B', style: TextStyle(fontSize: 11)),
+                onDeleted: () {
+                  _managerService.togglePhoneReadyOnly();
+                },
+              ),
+            ),
+          if (criteria.isSizeFilterActiveWithMax(maxSize) &&
+              criteria.sizeRangeMb != null)
             Padding(
               padding: const EdgeInsets.only(right: 6),
               child: InputChip(
@@ -914,7 +1070,8 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                 },
               ),
             ),
-          if (criteria.isParamsFilterActive && criteria.paramsRangeB != null)
+          if (criteria.isParamsFilterActiveWithMax(maxParams) &&
+              criteria.paramsRangeB != null)
             Padding(
               padding: const EdgeInsets.only(right: 6),
               child: InputChip(
@@ -929,7 +1086,8 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                 },
               ),
             ),
-          if (criteria.isRamFilterActive && criteria.ramRangeGb != null)
+          if (criteria.isRamFilterActiveWithMax(maxRam) &&
+              criteria.ramRangeGb != null)
             Padding(
               padding: const EdgeInsets.only(right: 6),
               child: InputChip(
@@ -1137,7 +1295,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Text(
-                          '${model.downloadSizeMb} MB',
+                          formatSizeMb(model.downloadSizeMb),
                           style: theme.textTheme.titleSmall?.copyWith(
                             fontWeight: FontWeight.bold,
                           ),
@@ -1241,6 +1399,12 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                             'Min ${model.minRamGb} GB RAM',
                             Icons.memory_rounded,
                           ),
+                          if (model.createdAt != null)
+                            _buildDetailPill(
+                              context,
+                              formatRelativeReleaseDate(model.createdAt!),
+                              Icons.calendar_today_rounded,
+                            ),
                         ],
                       ),
                     ],

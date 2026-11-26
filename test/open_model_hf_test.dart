@@ -94,5 +94,34 @@ void main() {
       expect(model.variants.last.quantization, 'Q8_0');
       expect(model.quantization, 'Q4_K_M');
     });
+
+    test('excludes mtp- and draft- auxiliary files when main weights exist', () {
+      expect(
+        OpenModel.isAuxiliaryGgufFile('mtp-gemma-4-E2B-it-Artemis-Q4_0.gguf'),
+        isTrue,
+      );
+      expect(OpenModel.isAuxiliaryGgufFile('mmproj-model-f16.gguf'), isTrue);
+      expect(
+        OpenModel.isAuxiliaryGgufFile('gemma-4-E2B-it-Artemis-Q4_0.gguf'),
+        isFalse,
+      );
+      expect(OpenModel.isAuxiliaryGgufFile('prompt-helper.gguf'), isFalse);
+
+      final hfJson = {
+        'id': 'owner/gemma-4-E2B-it-Artemis-GGUF',
+        'author': 'owner',
+        'createdAt': '2026-11-20T10:00:00.000Z',
+        'siblings': [
+          {'rfilename': 'mtp-gemma-4-E2B-it-Artemis-Q4_0.gguf', 'size': 73 * 1024 * 1024},
+          {'rfilename': 'gemma-4-E2B-it-Artemis-Q4_0.gguf', 'size': 2100 * 1024 * 1024},
+        ],
+      };
+
+      final model = OpenModel.fromHuggingFace(hfJson);
+      expect(model.variants.length, 1);
+      expect(model.variants.first.fileName, 'gemma-4-E2B-it-Artemis-Q4_0.gguf');
+      expect(model.downloadSizeMb, 2100);
+      expect(model.createdAt, DateTime.utc(2026, 11, 20, 10));
+    });
   });
 }

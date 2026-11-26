@@ -105,5 +105,32 @@ void main() {
       expect(criteria.matches(llama), false);
       expect(criteria.matches(gemmaLarge), false);
     });
+
+    test('supports phoneReadyOnly and dynamic bounds for large 19.4GB models', () {
+      final large35B = OpenModel(
+        id: 'ornith/35b-a3b',
+        name: 'Ornith 1.5 35B A3B',
+        publisher: 'ornith-ai',
+        parameterSizeB: '35',
+        format: 'GGUF',
+        quantization: 'Q4_K_M',
+        downloadSizeMb: 19400,
+        minRamGb: 30,
+        downloadUrl: 'https://huggingface.co/...',
+        description: '35B model',
+        repoUrl: 'https://huggingface.co/...',
+      );
+
+      final maxSize = ModelFilterCriteria.effectiveMaxSizeMbFor([llama, large35B]);
+      expect(maxSize, greaterThanOrEqualTo(30720.0));
+
+      final initial = ModelFilterCriteria.initial();
+      expect(initial.matches(large35B, maxSizeMb: maxSize), true);
+
+      final phoneOnly = initial.copyWith(phoneReadyOnly: true);
+      expect(phoneOnly.matches(llama), true);
+      expect(phoneOnly.matches(gemmaLarge), false);
+      expect(phoneOnly.matches(large35B), false);
+    });
   });
 }

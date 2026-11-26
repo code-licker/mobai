@@ -1,76 +1,143 @@
+import 'dart:math' as math;
+
 import 'package:material_ui/material_ui.dart';
 import 'package:mobai/models/open_model.dart';
 
 class ModelFilterCriteria {
-  // Constant standard bounds
+  // Constant standard bounds (large enough for 35B+ GGUFs by default)
   static const double defaultMinSizeMb = 100.0;
-  static const double defaultMaxSizeMb = 10000.0;
+  static const double defaultMaxSizeMb = 30720.0; // 30.0 GB
 
   static const double defaultMinParamsB = 0.1;
   static const double defaultMaxParamsB = 70.0;
 
   static const double defaultMinRamGb = 1.0;
-  static const double defaultMaxRamGb = 32.0;
+  static const double defaultMaxRamGb = 64.0;
 
   final RangeValues? sizeRangeMb;
   final RangeValues? paramsRangeB;
   final RangeValues? ramRangeGb;
   final Set<String> selectedProviders;
+  final bool phoneReadyOnly;
 
   const ModelFilterCriteria({
     this.sizeRangeMb,
     this.paramsRangeB,
     this.ramRangeGb,
     this.selectedProviders = const {},
+    this.phoneReadyOnly = false,
   });
 
-  bool get isSizeFilterActive =>
+  static double effectiveMaxSizeMbFor(Iterable<OpenModel> models) {
+    double maxFound = defaultMaxSizeMb;
+    for (final m in models) {
+      if (m.downloadSizeMb > maxFound) {
+        maxFound = m.downloadSizeMb.toDouble();
+      }
+    }
+    // Round up cleanly to nearest GB (1024 MB)
+    return (maxFound / 1024).ceil() * 1024.0;
+  }
+
+  static double effectiveMaxParamsBFor(Iterable<OpenModel> models) {
+    double maxFound = defaultMaxParamsB;
+    for (final m in models) {
+      if (m.paramSizeNum > maxFound) {
+        maxFound = m.paramSizeNum;
+      }
+    }
+    return math.max(defaultMaxParamsB, maxFound.ceilToDouble());
+  }
+
+  static double effectiveMaxRamGbFor(Iterable<OpenModel> models) {
+    double maxFound = defaultMaxRamGb;
+    for (final m in models) {
+      if (m.minRamGb > maxFound) {
+        maxFound = m.minRamGb.toDouble();
+      }
+    }
+    return math.max(defaultMaxRamGb, maxFound.ceilToDouble());
+  }
+
+  bool isSizeFilterActiveWithMax([double maxSizeMb = defaultMaxSizeMb]) =>
       sizeRangeMb != null &&
-      (sizeRangeMb!.start > defaultMinSizeMb || sizeRangeMb!.end < defaultMaxSizeMb);
+      (sizeRangeMb!.start > defaultMinSizeMb || sizeRangeMb!.end < maxSizeMb);
 
-  bool get isParamsFilterActive =>
+  bool isParamsFilterActiveWithMax([double maxParamsB = defaultMaxParamsB]) =>
       paramsRangeB != null &&
-      (paramsRangeB!.start > defaultMinParamsB || paramsRangeB!.end < defaultMaxParamsB);
+      (paramsRangeB!.start > defaultMinParamsB ||
+          paramsRangeB!.end < maxParamsB);
 
-  bool get isRamFilterActive =>
+  bool isRamFilterActiveWithMax([double maxRamGb = defaultMaxRamGb]) =>
       ramRangeGb != null &&
-      (ramRangeGb!.start > defaultMinRamGb || ramRangeGb!.end < defaultMaxRamGb);
+      (ramRangeGb!.start > defaultMinRamGb || ramRangeGb!.end < maxRamGb);
 
+  bool get isSizeFilterActive => isSizeFilterActiveWithMax(defaultMaxSizeMb);
+  bool get isParamsFilterActive => isParamsFilterActiveWithMax(defaultMaxParamsB);
+  bool get isRamFilterActive => isRamFilterActiveWithMax(defaultMaxRamGb);
   bool get isProviderFilterActive => selectedProviders.isNotEmpty;
 
-  bool get isActive =>
-      isSizeFilterActive ||
-      isParamsFilterActive ||
-      isRamFilterActive ||
-      isProviderFilterActive;
+  bool isActiveWithBounds({
+    double maxSizeMb = defaultMaxSizeMb,
+    double maxParamsB = defaultMaxParamsB,
+    double maxRamGb = defaultMaxRamGb,
+  }) =>
+      isSizeFilterActiveWithMax(maxSizeMb) ||
+      isParamsFilterActiveWithMax(maxParamsB) ||
+      isRamFilterActiveWithMax(maxRamGb) ||
+      isProviderFilterActive ||
+      phoneReadyOnly;
 
-  int get activeFilterCount {
+  bool get isActive => isActiveWithBounds();
+
+  int activeFilterCountWithBounds({
+    double maxSizeMb = defaultMaxSizeMb,
+    double maxParamsB = defaultMaxParamsB,
+    double maxRamGb = defaultMaxRamGb,
+  }) {
     int count = 0;
-    if (isSizeFilterActive) count++;
-    if (isParamsFilterActive) count++;
-    if (isRamFilterActive) count++;
+    if (isSizeFilterActiveWithMax(maxSizeMb)) count++;
+    if (isParamsFilterActiveWithMax(maxParamsB)) count++;
+    if (isRamFilterActiveWithMax(maxRamGb)) count++;
     if (isProviderFilterActive) count += selectedProviders.length;
+    if (phoneReadyOnly) count++;
     return count;
   }
 
-  bool matches(OpenModel model) {
-    if (isSizeFilterActive) {
+  int get activeFilterCount => activeFilterCountWithBounds();
+
+  bool matches(
+    OpenModel model, {
+    double maxSizeMb = defaultMaxSizeMb,
+    double maxParamsB = defaultMaxParamsB,
+    double maxRamGb = defaultMaxRamGb,
+  }) {
+    if (phoneReadyOnly) {
+      if (model.paramSizeNum > 8.5 || model.minRamGb > 10) {
+        return false;
+      }
+    }
+
+    if (sizeRangeMb != null) {
       final size = model.downloadSizeMb.toDouble();
-      if (size < sizeRangeMb!.start || size > sizeRangeMb!.end) {
+      if (size < sizeRangeMb!.start) return false;
+      if (sizeRangeMb!.end < maxSizeMb && size > sizeRangeMb!.end) {
         return false;
       }
     }
 
-    if (isParamsFilterActive) {
+    if (paramsRangeB != null) {
       final p = model.paramSizeNum;
-      if (p < paramsRangeB!.start || p > paramsRangeB!.end) {
+      if (p < paramsRangeB!.start) return false;
+      if (paramsRangeB!.end < maxParamsB && p > paramsRangeB!.end) {
         return false;
       }
     }
 
-    if (isRamFilterActive) {
+    if (ramRangeGb != null) {
       final ram = model.minRamGb.toDouble();
-      if (ram < ramRangeGb!.start || ram > ramRangeGb!.end) {
+      if (ram < ramRangeGb!.start) return false;
+      if (ramRangeGb!.end < maxRamGb && ram > ramRangeGb!.end) {
         return false;
       }
     }
@@ -92,6 +159,7 @@ class ModelFilterCriteria {
     RangeValues? paramsRangeB,
     RangeValues? ramRangeGb,
     Set<String>? selectedProviders,
+    bool? phoneReadyOnly,
     bool clearSize = false,
     bool clearParams = false,
     bool clearRam = false,
@@ -101,6 +169,7 @@ class ModelFilterCriteria {
       paramsRangeB: clearParams ? null : (paramsRangeB ?? this.paramsRangeB),
       ramRangeGb: clearRam ? null : (ramRangeGb ?? this.ramRangeGb),
       selectedProviders: selectedProviders ?? this.selectedProviders,
+      phoneReadyOnly: phoneReadyOnly ?? this.phoneReadyOnly,
     );
   }
 

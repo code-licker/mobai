@@ -4,20 +4,7 @@ import 'package:mobai/services/chat_session_service.dart';
 import 'package:mobai/services/local_inference_service.dart';
 import 'package:mobai/services/model_manager_service.dart';
 import 'package:mobai/services/storage_service.dart';
-
-String formatBytesHuman(int bytes) {
-  if (bytes <= 0) return '0 B';
-  if (bytes >= 1024 * 1024 * 1024) {
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
-  }
-  if (bytes >= 1024 * 1024) {
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-  }
-  if (bytes >= 1024) {
-    return '${(bytes / 1024).toStringAsFixed(1)} KB';
-  }
-  return '$bytes B';
-}
+import 'package:mobai/utils/format_utils.dart';
 
 /// First-launch modal prompting the user to pick a parent folder for
 /// `MobAI/models` and `MobAI/chats`, or fall back to App Documents.
@@ -283,7 +270,7 @@ Future<void> showStorageSettingsSheet(BuildContext context) async {
                       Icon(Icons.storage_rounded, size: 16, color: theme.colorScheme.primary),
                       const SizedBox(width: 6),
                       Text(
-                        'Models disk usage: ${formatBytesHuman(usedBytes)}',
+                        'Models disk usage: ${formatBytes(usedBytes)}',
                         style: theme.textTheme.bodySmall?.copyWith(
                           fontWeight: FontWeight.w600,
                         ),
