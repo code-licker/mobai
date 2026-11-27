@@ -45,6 +45,31 @@ class LocalInferenceService extends ChangeNotifier {
       );
     }
 
+    final splitInfo = OpenModel.parseSplitShard(fileName);
+    if (splitInfo != null) {
+      final padTotal = splitInfo.totalParts.toString().padLeft(5, '0');
+      if (splitInfo.partNumber != 1) {
+        throw llama.LlamaModelException(
+          'Cannot load split shard ${splitInfo.partNumber} directly. Select part 1 (${splitInfo.prefix}-00001-of-$padTotal.gguf) with all ${splitInfo.totalParts} parts present.',
+        );
+      }
+      final sep = Platform.pathSeparator;
+      final parentPath = file.parent.path;
+      final missingParts = <int>[];
+      for (var k = 1; k <= splitInfo.totalParts; k++) {
+        final padIdx = k.toString().padLeft(5, '0');
+        final partPath = '$parentPath$sep${splitInfo.prefix}-$padIdx-of-$padTotal.gguf';
+        if (!await File(partPath).exists()) {
+          missingParts.add(k);
+        }
+      }
+      if (missingParts.isNotEmpty) {
+        throw llama.LlamaModelException(
+          'Incomplete split model "$fileName": missing part(s) ${missingParts.join(", ")} of ${splitInfo.totalParts} in the same folder.',
+        );
+      }
+    }
+
     if (_engine != null &&
         _loadedModelPath == modelPath &&
         _engine!.isReady &&

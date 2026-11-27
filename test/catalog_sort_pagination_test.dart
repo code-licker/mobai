@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mobai/models/open_model.dart';
 import 'package:mobai/services/model_catalog_service.dart';
 import 'package:mobai/services/model_manager_service.dart';
 import 'package:mobai/services/storage_service.dart';
@@ -50,12 +51,25 @@ void main() {
         requestedUrls.add(req.requestedUri);
         final cursor = req.uri.queryParameters['cursor'];
         final sort = req.uri.queryParameters['sort'];
+        final path = req.uri.path;
         final baseUrl = 'http://127.0.0.1:${server.port}/api/models';
 
         req.response.statusCode = HttpStatus.ok;
         req.response.headers.contentType = ContentType.json;
 
-        if (cursor == 'page2') {
+        if (path == '/api/models/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF') {
+          req.response.write(
+            jsonEncode({
+              'id': 'ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF',
+              'siblings': [
+                {
+                  'rfilename': 'DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf',
+                  'size': 110595290816,
+                },
+              ],
+            }),
+          );
+        } else if (cursor == 'page2') {
           req.response.write(
             jsonEncode([
               {
@@ -161,7 +175,35 @@ void main() {
       // Server-side latest sort re-fetches with sort=createdAt
       await manager.setSortOption(ModelSortOption.latest);
       expect(requestedUrls.last.queryParameters['sort'], 'createdAt');
+      expect(
+        requestedUrls.first.queryParametersAll['expand[]'],
+        containsAll(['gguf', 'siblings', 'safetensors']),
+      );
       expect(manager.filteredModels.first.id, 'owner/newest-1b');
+    });
+
+    test('getVariantsForModel resolves ?blobs=true when list variants lack sizes', () async {
+      final manager = ModelManagerService();
+      await manager.loadModels();
+
+      final stubbed = OpenModel.fromHuggingFace({
+        'id': 'ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF',
+        'author': 'ISTA-DASLab',
+        'gguf': {'total': 196613849600},
+        'siblings': [
+          {'rfilename': 'DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf'},
+        ],
+      });
+      manager.addCustomModel(stubbed);
+      expect(stubbed.hasExactSizes, isFalse);
+
+      final resolvedVariants = await manager.getVariantsForModel(stubbed);
+      expect(resolvedVariants.single.sizeBytes, 110595290816);
+      final updatedModel = manager.models.firstWhere(
+        (m) => m.id == 'ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF',
+      );
+      expect(updatedModel.hasExactSizes, isTrue);
+      expect(updatedModel.downloadSizeMb, 105472);
     });
   });
 }

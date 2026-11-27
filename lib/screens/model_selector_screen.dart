@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:mobai/models/open_model.dart';
 import 'package:mobai/screens/chat_screen.dart';
+import 'package:mobai/screens/widgets/active_downloads_sheet.dart';
 import 'package:mobai/screens/widgets/add_custom_model_dialog.dart';
+import 'package:mobai/screens/widgets/hf_token_dialog.dart';
 import 'package:mobai/screens/widgets/model_filter_bottom_sheet.dart';
 import 'package:mobai/services/chat_session_service.dart';
+import 'package:mobai/services/download_notification_service.dart';
 import 'package:mobai/services/model_catalog_service.dart';
 import 'package:mobai/services/model_manager_service.dart';
 import 'package:mobai/utils/format_utils.dart';
@@ -24,7 +28,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
   Timer? _debounceTimer;
 
   String? _selectedModelId;
-  bool _showMyModelsOnly = false;
+  bool get _showMyModelsOnly => _managerService.filterCriteria.downloadedOnly;
 
   List<OpenModel> get _visibleModels {
     if (!_showMyModelsOnly) {
@@ -106,6 +110,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
           initialCriteria: _managerService.filterCriteria,
           allModels: _managerService.models,
           availableProviders: _managerService.availableProviders,
+          deviceRamGb: _managerService.deviceRamGb,
           onApply: (newCriteria) {
             _managerService.updateFilterCriteria(newCriteria);
           },
@@ -159,7 +164,98 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
       _navigateToChat(model);
     } else {
       // Wireframe requirement: "Upon clicking chat Show download progress"
-      _showDownloadAndProceedSheet(model);
+      _startDownloadWithChecks(model, openChatSheet: true);
+    }
+  }
+
+  Future<bool> _confirmHeavyModelDownload(
+    OpenModel model, {
+    GgufVariant? variant,
+  }) async {
+    final estSizeMb = variant != null && variant.sizeMb > 0
+        ? variant.sizeMb
+        : model.downloadSizeMb;
+    final estMinRamGb = variant != null && variant.sizeMb > 0
+        ? (((estSizeMb / 1024) * 1.5).ceil() + 1).clamp(2, 2048)
+        : model.minRamGb;
+    final deviceRam = _managerService.deviceRamGb;
+    final isTooLarge = estMinRamGb > deviceRam || estMinRamGb > 12;
+    if (!isTooLarge) return true;
+
+    final partCount = variant?.partCount ?? model.partCount;
+    final sizeText = formatSizeWithParts(estSizeMb, partCount: partCount);
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(
+              Icons.warning_amber_rounded,
+              color: Theme.of(context).colorScheme.error,
+            ),
+            const SizedBox(width: 8),
+            const Expanded(child: Text('Not Recommended for Phone')),
+          ],
+        ),
+        content: Text(
+          '${model.name} ($sizeText) requires ~$estMinRamGb GB RAM, which exceeds safe phone memory (~${deviceRam.toStringAsFixed(0)} GB device RAM).\n\n'
+          'Downloading or loading this model on a phone will likely cause errors or crash the app.\n\n'
+          'Do you still want to download it?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Download Anyway'),
+          ),
+        ],
+      ),
+    );
+    return result == true;
+  }
+
+  Future<void> _startDownloadWithChecks(
+    OpenModel model, {
+    GgufVariant? variant,
+    bool openChatSheet = false,
+  }) async {
+    final targetVariant = variant ?? model.primaryVariant;
+    if (targetVariant != null && targetVariant.hasMissingParts) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Incomplete split model on Hugging Face: found ${targetVariant.parts.length} of ${targetVariant.partCount} parts.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (!_managerService.isModelDownloading(model.id) &&
+        !_managerService.isModelPaused(model.id)) {
+      final confirmed = await _confirmHeavyModelDownload(
+        model,
+        variant: targetVariant,
+      );
+      if (!confirmed || !mounted) return;
+    }
+
+    if (openChatSheet) {
+      _showDownloadAndProceedSheet(model, variant: targetVariant);
+    } else {
+      await _managerService.downloadModel(
+        model.id,
+        model: model,
+        variant: targetVariant,
+      );
     }
   }
 
@@ -295,37 +391,50 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                           itemBuilder: (context, idx) {
                             final variant = snapshot.data![idx];
                             final sizeLabel = variant.sizeBytes != null
-                                ? _formatBytes(variant.sizeBytes!)
-                                : 'Size unknown';
+                                ? '${_formatBytes(variant.sizeBytes!)}${variant.isSplit ? ' (${variant.partCount} parts)' : ''}'
+                                : (variant.isSplit
+                                      ? 'Size unknown (${variant.partCount} parts)'
+                                      : 'Size unknown');
+                            final estRamGb = variant.sizeMb > 0
+                                ? (((variant.sizeMb / 1024) * 1.5).ceil() + 1)
+                                : model.minRamGb;
+                            final tooHeavy =
+                                estRamGb > _managerService.deviceRamGb ||
+                                estRamGb > 12;
+                            final disabled =
+                                variant.isAuxiliary || variant.hasMissingParts;
                             return ListTile(
                               contentPadding: EdgeInsets.zero,
-                              title: Row(
+                              title: Wrap(
+                                spacing: 8,
+                                runSpacing: 4,
+                                crossAxisAlignment: WrapCrossAlignment.center,
                                 children: [
                                   Text(
                                     variant.quantization,
                                     style: const TextStyle(fontWeight: FontWeight.bold),
                                   ),
-                                  if (variant.isAuxiliary) ...[
-                                    const SizedBox(width: 8),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 6,
-                                        vertical: 2,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: theme.colorScheme.errorContainer,
-                                        borderRadius: BorderRadius.circular(4),
-                                      ),
-                                      child: Text(
-                                        'Auxiliary (not standalone)',
-                                        style: TextStyle(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w600,
-                                          color: theme.colorScheme.onErrorContainer,
-                                        ),
-                                      ),
+                                  if (variant.isAuxiliary)
+                                    _buildVariantTag(
+                                      theme,
+                                      'Auxiliary (not standalone)',
+                                      theme.colorScheme.errorContainer,
+                                      theme.colorScheme.onErrorContainer,
+                                    )
+                                  else if (variant.hasMissingParts)
+                                    _buildVariantTag(
+                                      theme,
+                                      'Incomplete (${variant.parts.length}/${variant.partCount} parts)',
+                                      theme.colorScheme.errorContainer,
+                                      theme.colorScheme.onErrorContainer,
+                                    )
+                                  else if (tooHeavy)
+                                    _buildVariantTag(
+                                      theme,
+                                      'Not recommended (~$estRamGb GB RAM)',
+                                      theme.colorScheme.errorContainer,
+                                      theme.colorScheme.onErrorContainer,
                                     ),
-                                  ],
                                 ],
                               ),
                               subtitle: Text(
@@ -335,18 +444,21 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                                 style: const TextStyle(fontSize: 12),
                               ),
                               trailing: FilledButton.tonal(
-                                onPressed: variant.isAuxiliary
+                                onPressed: disabled
                                     ? null
                                     : () {
                                         Navigator.pop(sheetContext);
-                                        _managerService.downloadModel(
-                                          model.id,
-                                          model: model,
+                                        _startDownloadWithChecks(
+                                          model,
                                           variant: variant,
                                         );
                                       },
                                 child: Text(
-                                  variant.isAuxiliary ? 'Unsupported' : 'Download',
+                                  variant.isAuxiliary
+                                      ? 'Unsupported'
+                                      : (variant.hasMissingParts
+                                            ? 'Incomplete'
+                                            : 'Download'),
                                 ),
                               ),
                             );
@@ -363,7 +475,33 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
     );
   }
 
-  void _showDownloadAndProceedSheet(OpenModel model) {
+  Widget _buildVariantTag(
+    ThemeData theme,
+    String label,
+    Color bg,
+    Color fg,
+  ) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: fg,
+        ),
+      ),
+    );
+  }
+
+  void _showDownloadAndProceedSheet(
+    OpenModel model, {
+    GgufVariant? variant,
+  }) {
     final theme = Theme.of(context);
     bool navigated = false;
 
@@ -380,6 +518,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
           builder: (context, _) {
             final state = _managerService.getDownloadState(model.id);
             final isDownloading = state?.isDownloading ?? false;
+            final isPaused = state?.isPaused ?? false;
             final progress = state?.progress ?? 0.0;
             final isDownloaded = _managerService.isModelDownloaded(model.id);
             final error = state?.errorMessage;
@@ -389,7 +528,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                 : '0 MB';
             final totalLabel = state != null && state.totalBytes > 0
                 ? _formatBytes(state.totalBytes)
-                : '${model.downloadSizeMb} MB';
+                : formatSizeMb(model.downloadSizeMb);
             final speedLabel = state != null && state.speedBytesPerSec > 0
                 ? ' • ${_formatBytes(state.speedBytesPerSec.round())}/s'
                 : '';
@@ -413,7 +552,9 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                         child: Icon(
                           error != null
                               ? Icons.error_outline_rounded
-                              : Icons.downloading_rounded,
+                              : (isPaused
+                                    ? Icons.pause_circle_outline_rounded
+                                    : Icons.downloading_rounded),
                           color: error != null
                               ? theme.colorScheme.error
                               : theme.colorScheme.primary,
@@ -427,7 +568,9 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                             Text(
                               error != null
                                   ? 'Download Failed'
-                                  : 'Downloading Model Weights',
+                                  : (isPaused
+                                        ? 'Download Paused'
+                                        : 'Downloading Model Weights'),
                               style: theme.textTheme.titleMedium?.copyWith(
                                 fontWeight: FontWeight.bold,
                               ),
@@ -448,7 +591,9 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                     LinearProgressIndicator(
                       value: isDownloaded
                           ? 1.0
-                          : (isDownloading && progress > 0 ? progress : null),
+                          : ((isDownloading || isPaused) && progress > 0
+                                ? progress
+                                : null),
                       borderRadius: BorderRadius.circular(6),
                       minHeight: 8,
                     ),
@@ -489,12 +634,14 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                       ),
                     ),
                   const SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
+                  Wrap(
+                    alignment: WrapAlignment.end,
+                    spacing: 8,
+                    runSpacing: 8,
                     children: [
                       TextButton(
                         onPressed: () async {
-                          if (isDownloading) {
+                          if (isDownloading || isPaused) {
                             await _managerService.cancelDownload(model.id);
                           } else {
                             _managerService.clearDownloadError(model.id);
@@ -503,10 +650,66 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                             Navigator.pop(sheetContext);
                           }
                         },
-                        child: Text(isDownloading ? 'Cancel Download' : 'Close'),
+                        child: Text(
+                          (isDownloading || isPaused) ? 'Cancel' : 'Close',
+                        ),
                       ),
+                      if (isDownloading)
+                        OutlinedButton.icon(
+                          icon: const Icon(Icons.pause_rounded, size: 18),
+                          label: const Text('Pause'),
+                          onPressed: () =>
+                              _managerService.pauseDownload(model.id),
+                        ),
+                      if (isPaused) ...[
+                        OutlinedButton(
+                          onPressed: () {
+                            if (sheetContext.mounted) {
+                              Navigator.pop(sheetContext);
+                            }
+                          },
+                          child: const Text('Keep Paused'),
+                        ),
+                        FilledButton.icon(
+                          icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                          label: const Text('Resume'),
+                          onPressed: () {
+                            _managerService
+                                .resumeDownload(model.id, model: model)
+                                .then((downloaded) {
+                              if (downloaded != null &&
+                                  !navigated &&
+                                  sheetContext.mounted) {
+                                navigated = true;
+                                Navigator.pop(sheetContext);
+                                _navigateToChat(model);
+                              }
+                            });
+                          },
+                        ),
+                      ],
                       if (error != null) ...[
-                        const SizedBox(width: 8),
+                        if (state?.isGatedError == true)
+                          OutlinedButton.icon(
+                            icon: const Icon(Icons.key_rounded, size: 16),
+                            label: const Text('Add HF Token'),
+                            onPressed: () async {
+                              final saved = await showHfTokenDialog(context);
+                              if (saved && sheetContext.mounted) {
+                                _managerService
+                                    .downloadModel(model.id, model: model)
+                                    .then((downloaded) {
+                                  if (downloaded != null &&
+                                      !navigated &&
+                                      sheetContext.mounted) {
+                                    navigated = true;
+                                    Navigator.pop(sheetContext);
+                                    _navigateToChat(model);
+                                  }
+                                });
+                              }
+                            },
+                          ),
                         FilledButton.icon(
                           icon: const Icon(Icons.refresh_rounded, size: 18),
                           label: const Text('Retry'),
@@ -535,8 +738,11 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
       },
     );
 
-    if (!_managerService.isModelDownloading(model.id)) {
-      _managerService.downloadModel(model.id, model: model).then((downloaded) {
+    if (!_managerService.isModelDownloading(model.id) &&
+        !_managerService.isModelPaused(model.id)) {
+      _managerService
+          .downloadModel(model.id, model: model, variant: variant)
+          .then((downloaded) {
         if (downloaded != null && !navigated && mounted && Navigator.canPop(context)) {
           navigated = true;
           Navigator.pop(context);
@@ -558,7 +764,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
       if (_managerService.isModelDownloaded(result.model.id)) {
         _navigateToChat(result.model);
       } else {
-        _showDownloadAndProceedSheet(result.model);
+        _startDownloadWithChecks(result.model, openChatSheet: true);
       }
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -568,42 +774,148 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
   }
 
   void _showModelLinkDialog(OpenModel model) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            const Icon(Icons.link_rounded),
-            const SizedBox(width: 8),
-            const Text('Model Link'),
-          ],
+    final repoUrl = model.repoUrl.trim();
+    final downloadUrl = model.downloadUrl.trim();
+
+    bool isHttpUrl(String url) {
+      final uri = Uri.tryParse(url);
+      return uri != null && (uri.scheme == 'http' || uri.scheme == 'https');
+    }
+
+    Future<void> openInBrowser(BuildContext dialogContext, String url) async {
+      final opened = await DownloadNotificationService().openUrl(url);
+      if (!opened && dialogContext.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open link in browser.')),
+        );
+      }
+    }
+
+    Future<void> copyLink(BuildContext dialogContext, String url) async {
+      await Clipboard.setData(ClipboardData(text: url));
+      if (dialogContext.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Link copied to clipboard')),
+        );
+      }
+    }
+
+    Widget buildLinkBlock(
+      BuildContext dialogContext, {
+      required String label,
+      required String url,
+      required bool emphasizePrimary,
+    }) {
+      final theme = Theme.of(dialogContext);
+      final hasUrl = isHttpUrl(url);
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest.withAlpha(80),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: theme.colorScheme.outlineVariant.withAlpha(110),
+          ),
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              model.name,
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Repository: ${model.repoUrl}',
-              style: const TextStyle(fontSize: 13),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Download URL: ${model.downloadUrl}',
-              style: TextStyle(
-                fontSize: 12,
-                color: Theme.of(context).colorScheme.outline,
+              label,
+              style: theme.textTheme.labelMedium?.copyWith(
+                fontWeight: FontWeight.bold,
               ),
             ),
+            const SizedBox(height: 4),
+            SelectableText(
+              url.isNotEmpty ? url : 'Not available',
+              style: TextStyle(
+                fontSize: 12,
+                color: url.isNotEmpty
+                    ? theme.colorScheme.onSurfaceVariant
+                    : theme.colorScheme.outline,
+              ),
+            ),
+            if (hasUrl) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  if (emphasizePrimary)
+                    FilledButton.tonalIcon(
+                      style: FilledButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                      label: const Text('Open in Browser'),
+                      onPressed: () => openInBrowser(dialogContext, url),
+                    )
+                  else
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                      label: const Text('Open'),
+                      onPressed: () => openInBrowser(dialogContext, url),
+                    ),
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    icon: const Icon(Icons.copy_rounded, size: 15),
+                    label: const Text('Copy'),
+                    onPressed: () => copyLink(dialogContext, url),
+                  ),
+                ],
+              ),
+            ],
           ],
+        ),
+      );
+    }
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.link_rounded),
+            SizedBox(width: 8),
+            Text('Model Link'),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                model.name,
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 12),
+              buildLinkBlock(
+                dialogContext,
+                label: 'Repository',
+                url: repoUrl,
+                emphasizePrimary: true,
+              ),
+              const SizedBox(height: 10),
+              buildLinkBlock(
+                dialogContext,
+                label: 'Download URL',
+                url: downloadUrl,
+                emphasizePrimary: !isHttpUrl(repoUrl),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Close'),
           ),
         ],
@@ -629,6 +941,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
         title: const Text('Model Catalog'),
         centerTitle: true,
         actions: [
+          const DownloadIndicatorButton(),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Reload Models',
@@ -651,7 +964,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
               child: _buildSearchBar(context),
             ),
 
-            // Catalog Scope, Phone-Ready Toggle, Sort & Rescan
+            // Catalog Scope (All / My Models) & Rescan
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 12, 4),
               child: Row(
@@ -666,10 +979,8 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                             selected: !_showMyModelsOnly,
                             visualDensity: VisualDensity.compact,
                             onSelected: (_) {
-                              setState(() {
-                                _showMyModelsOnly = false;
-                                _onServiceUpdate();
-                              });
+                              _managerService.setDownloadedOnly(false);
+                              _onServiceUpdate();
                             },
                           ),
                           const SizedBox(width: 6),
@@ -681,77 +992,9 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                             selected: _showMyModelsOnly,
                             visualDensity: VisualDensity.compact,
                             onSelected: (_) {
-                              setState(() {
-                                _showMyModelsOnly = true;
-                                _onServiceUpdate();
-                              });
+                              _managerService.setDownloadedOnly(true);
+                              _onServiceUpdate();
                             },
-                          ),
-                          const SizedBox(width: 6),
-                          FilterChip(
-                            label: const Text(
-                              'Phone <=8B',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                            selected: filterCriteria.phoneReadyOnly,
-                            visualDensity: VisualDensity.compact,
-                            onSelected: (_) =>
-                                _managerService.togglePhoneReadyOnly(),
-                          ),
-                          const SizedBox(width: 6),
-                          PopupMenuButton<ModelSortOption>(
-                            tooltip: 'Sort models',
-                            initialValue: _managerService.sortOption,
-                            onSelected: (option) =>
-                                _managerService.setSortOption(option),
-                            itemBuilder: (context) => ModelSortOption.values
-                                .map(
-                                  (opt) => PopupMenuItem<ModelSortOption>(
-                                    value: opt,
-                                    child: Row(
-                                      children: [
-                                        if (_managerService.sortOption == opt)
-                                          Icon(
-                                            Icons.check_rounded,
-                                            size: 16,
-                                            color: theme.colorScheme.primary,
-                                          )
-                                        else
-                                          const SizedBox(width: 16),
-                                        const SizedBox(width: 8),
-                                        Text(opt.label),
-                                      ],
-                                    ),
-                                  ),
-                                )
-                                .toList(),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 6,
-                              ),
-                              decoration: BoxDecoration(
-                                color: theme.colorScheme.surfaceContainerHigh,
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                  color: theme.colorScheme.outlineVariant,
-                                ),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(Icons.sort_rounded, size: 15),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    _managerService.sortOption.label,
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
                           ),
                         ],
                       ),
@@ -1002,6 +1245,58 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
               },
             ),
           Container(
+            margin: const EdgeInsets.only(right: 4),
+            child: PopupMenuButton<ModelSortOption>(
+              tooltip: 'Sort (${_managerService.sortOption.label})',
+              initialValue: _managerService.sortOption,
+              onSelected: (option) => _managerService.setSortOption(option),
+              itemBuilder: (context) => ModelSortOption.values
+                  .map(
+                    (opt) => PopupMenuItem<ModelSortOption>(
+                      value: opt,
+                      child: Row(
+                        children: [
+                          if (_managerService.sortOption == opt)
+                            Icon(
+                              Icons.check_rounded,
+                              size: 16,
+                              color: theme.colorScheme.primary,
+                            )
+                          else
+                            const SizedBox(width: 16),
+                          const SizedBox(width: 8),
+                          Text(opt.label),
+                        ],
+                      ),
+                    ),
+                  )
+                  .toList(),
+              child: Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: _managerService.sortOption != ModelSortOption.popular
+                      ? theme.colorScheme.primaryContainer
+                      : theme.colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                alignment: Alignment.center,
+                child: Badge(
+                  isLabelVisible:
+                      _managerService.sortOption != ModelSortOption.popular,
+                  smallSize: 6,
+                  child: Icon(
+                    Icons.sort_rounded,
+                    size: 20,
+                    color: _managerService.sortOption != ModelSortOption.popular
+                        ? theme.colorScheme.onPrimaryContainer
+                        : theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Container(
             margin: const EdgeInsets.only(right: 6),
             child: IconButton.filledTonal(
               style: IconButton.styleFrom(
@@ -1044,13 +1339,26 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Row(
         children: [
-          if (criteria.phoneReadyOnly)
+          if (criteria.hideNotRecommended)
             Padding(
               padding: const EdgeInsets.only(right: 6),
               child: InputChip(
-                label: const Text('Phone <=8B', style: TextStyle(fontSize: 11)),
+                label: const Text(
+                  'Hide Not Recommended',
+                  style: TextStyle(fontSize: 11),
+                ),
                 onDeleted: () {
-                  _managerService.togglePhoneReadyOnly();
+                  _managerService.toggleHideNotRecommended();
+                },
+              ),
+            ),
+          if (criteria.downloadedOnly)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: InputChip(
+                label: const Text('Downloaded', style: TextStyle(fontSize: 11)),
+                onDeleted: () {
+                  _managerService.setDownloadedOnly(false);
                 },
               ),
             ),
@@ -1130,9 +1438,17 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
     );
   }
 
-  Widget _buildHubStatusHeader(BuildContext context, int count) {
+  Widget _buildHubStatusHeader(BuildContext context, int visibleCount) {
     final theme = Theme.of(context);
     final query = _managerService.searchQuery;
+    final loadedCount = _showMyModelsOnly
+        ? _managerService.myModels.length
+        : _managerService.models.length;
+    final hasMore = !_showMyModelsOnly && _managerService.hasMoreModels;
+    final suffix = hasMore ? '+' : '';
+    final countText = visibleCount < loadedCount
+        ? '$visibleCount / $loadedCount$suffix models'
+        : '$visibleCount$suffix ${visibleCount == 1 && !hasMore ? "model" : "models"}';
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 6, 20, 4),
@@ -1151,7 +1467,13 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
               ),
               const SizedBox(width: 6),
               Text(
-                query.isEmpty ? 'Hugging Face API' : 'HF Results for "$query"',
+                _showMyModelsOnly
+                    ? (query.isEmpty
+                        ? 'My Models & Downloads'
+                        : 'My Models matching "$query"')
+                    : (query.isEmpty
+                        ? 'Hugging Face API'
+                        : 'HF Results for "$query"'),
                 style: theme.textTheme.labelMedium?.copyWith(
                   fontWeight: FontWeight.w600,
                   color: theme.colorScheme.onSurfaceVariant,
@@ -1160,7 +1482,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
             ],
           ),
           Text(
-            '$count ${count == 1 ? "model" : "models"}',
+            countText,
             style: theme.textTheme.labelSmall?.copyWith(
               color: theme.colorScheme.outline,
             ),
@@ -1268,23 +1590,93 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                             ],
                           ),
                           const SizedBox(height: 4),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: pubColor.withAlpha(25),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              model.publisher,
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                                color: pubColor,
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: pubColor.withAlpha(25),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  model.publisher,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: pubColor,
+                                  ),
+                                ),
                               ),
-                            ),
+                              if (model.isGated)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.amber.shade100,
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.lock_outline_rounded,
+                                        size: 11,
+                                        color: Colors.amber.shade900,
+                                      ),
+                                      const SizedBox(width: 3),
+                                      Text(
+                                        'Gated',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.amber.shade900,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              if (model.isTooLargeForPhone(
+                                deviceRamGb: _managerService.deviceRamGb,
+                              ))
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: theme.colorScheme.errorContainer,
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.warning_amber_rounded,
+                                        size: 11,
+                                        color:
+                                            theme.colorScheme.onErrorContainer,
+                                      ),
+                                      const SizedBox(width: 3),
+                                      Text(
+                                        'Not recommended',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: theme
+                                              .colorScheme.onErrorContainer,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                            ],
                           ),
                         ],
                       ),
@@ -1295,7 +1687,10 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Text(
-                          formatSizeMb(model.downloadSizeMb),
+                          formatSizeWithParts(
+                            model.downloadSizeMb,
+                            partCount: model.partCount,
+                          ),
                           style: theme.textTheme.titleSmall?.copyWith(
                             fontWeight: FontWeight.bold,
                           ),
@@ -1399,6 +1794,12 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                             'Min ${model.minRamGb} GB RAM',
                             Icons.memory_rounded,
                           ),
+                          if (model.isSplit)
+                            _buildDetailPill(
+                              context,
+                              '${model.partCount} Parts',
+                              Icons.layers_rounded,
+                            ),
                           if (model.createdAt != null)
                             _buildDetailPill(
                               context,
@@ -1413,7 +1814,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
 
                 const SizedBox(height: 12),
 
-                // Card Bottom Action Row: Download / Progress / Delete / Variants & Selected Radio
+                // Card Bottom Action Row: Download / Pause / Resume / Delete & Selected Radio
                 if (downloadError != null && !isDownloading && !isDownloaded) ...[
                   Container(
                     width: double.infinity,
@@ -1423,21 +1824,68 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                       color: theme.colorScheme.errorContainer.withAlpha(120),
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: Text(
-                      downloadError,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: theme.colorScheme.onErrorContainer,
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          downloadError,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: theme.colorScheme.onErrorContainer,
+                          ),
+                        ),
+                        if (downloadState?.isGatedError == true) ...[
+                          const SizedBox(height: 6),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 4,
+                            children: [
+                              ActionChip(
+                                avatar: const Icon(Icons.key_rounded, size: 14),
+                                label: const Text(
+                                  'Add HF Token',
+                                  style: TextStyle(fontSize: 11),
+                                ),
+                                visualDensity: VisualDensity.compact,
+                                onPressed: () async {
+                                  final saved = await showHfTokenDialog(context);
+                                  if (saved && mounted) {
+                                    _managerService.downloadModel(
+                                      model.id,
+                                      model: model,
+                                    );
+                                  }
+                                },
+                              ),
+                              ActionChip(
+                                avatar: const Icon(Icons.search_rounded, size: 14),
+                                label: const Text(
+                                  'Find ungated',
+                                  style: TextStyle(fontSize: 11),
+                                ),
+                                visualDensity: VisualDensity.compact,
+                                onPressed: () {
+                                  final query = '${model.name} gguf';
+                                  setState(() {
+                                    _searchController.text = query;
+                                  });
+                                  _managerService.setDownloadedOnly(false);
+                                  _managerService.searchModels(query);
+                                },
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                 ],
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    // Download / Progress / Retry / Delete Controls
+                    // Download / Progress / Pause / Resume / Retry / Delete Controls
                     Flexible(
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
@@ -1487,7 +1935,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                             Flexible(
                               child: Text(
                                 downloadState != null && downloadState.totalBytes > 0
-                                    ? '${(downloadProgress * 100).toInt()}% (${_formatBytes(downloadState.receivedBytes)})'
+                                    ? '${downloadState.totalParts > 1 ? 'Part ${downloadState.currentPartIndex + 1}/${downloadState.totalParts} • ' : ''}${(downloadProgress * 100).toInt()}% (${_formatBytes(downloadState.receivedBytes)}${downloadState.speedBytesPerSec > 0 ? ' • ${_formatBytes(downloadState.speedBytesPerSec.round())}/s' : ''})'
                                     : 'Downloading ${(downloadProgress * 100).toInt()}%...',
                                 overflow: TextOverflow.ellipsis,
                                 style: theme.textTheme.labelMedium?.copyWith(
@@ -1496,10 +1944,43 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 4),
+                            const SizedBox(width: 2),
+                            IconButton(
+                              icon: const Icon(Icons.pause_rounded, size: 18),
+                              tooltip: 'Pause download',
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () =>
+                                  _managerService.pauseDownload(model.id),
+                            ),
                             IconButton(
                               icon: const Icon(Icons.close_rounded, size: 18),
                               tooltip: 'Cancel download',
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () =>
+                                  _managerService.cancelDownload(model.id),
+                            ),
+                          ] else if (downloadState?.isPaused == true) ...[
+                            FilledButton.tonalIcon(
+                              style: FilledButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 4,
+                                ),
+                              ),
+                              icon: const Icon(Icons.play_arrow_rounded, size: 16),
+                              label: Text(
+                                'Resume ${(downloadProgress * 100).toInt()}%',
+                              ),
+                              onPressed: () => _managerService.resumeDownload(
+                                model.id,
+                                model: model,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            IconButton(
+                              icon: const Icon(Icons.close_rounded, size: 18),
+                              tooltip: 'Cancel paused download',
                               visualDensity: VisualDensity.compact,
                               onPressed: () =>
                                   _managerService.cancelDownload(model.id),
@@ -1522,12 +2003,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                               label: Text(
                                 downloadError != null ? 'Retry' : 'Download',
                               ),
-                              onPressed: () {
-                                _managerService.downloadModel(
-                                  model.id,
-                                  model: model,
-                                );
-                              },
+                              onPressed: () => _startDownloadWithChecks(model),
                             ),
                             if (!model.id.startsWith('local:')) ...[
                               const SizedBox(width: 4),

@@ -123,5 +123,77 @@ void main() {
       expect(model.downloadSizeMb, 2100);
       expect(model.createdAt, DateTime.utc(2026, 11, 20, 10));
     });
+
+    test('parses Hugging Face gated field into isGated', () {
+      final gatedBool = OpenModel.fromHuggingFace({
+        'id': 'google/gemma-2b-gguf',
+        'author': 'google',
+        'gated': true,
+        'siblings': [
+          {'rfilename': 'gemma-2b.gguf', 'size': 1200 * 1024 * 1024},
+        ],
+      });
+      final gatedManual = OpenModel.fromHuggingFace({
+        'id': 'meta-llama/Llama-3-8B-GGUF',
+        'author': 'meta-llama',
+        'gated': 'manual',
+        'siblings': [
+          {'rfilename': 'llama-3-8b.gguf', 'size': 4500 * 1024 * 1024},
+        ],
+      });
+      final ungatedFalse = OpenModel.fromHuggingFace({
+        'id': 'owner/open-model-gguf',
+        'author': 'owner',
+        'gated': false,
+        'siblings': [
+          {'rfilename': 'open-model.gguf', 'size': 900 * 1024 * 1024},
+        ],
+      });
+      final ungatedOmitted = OpenModel.fromHuggingFace({
+        'id': 'owner/default-model-gguf',
+        'author': 'owner',
+        'siblings': [
+          {'rfilename': 'default-model.gguf', 'size': 900 * 1024 * 1024},
+        ],
+      });
+
+      expect(gatedBool.isGated, isTrue);
+      expect(gatedManual.isGated, isTrue);
+      expect(ungatedFalse.isGated, isFalse);
+      expect(ungatedOmitted.isGated, isFalse);
+    });
+
+    test('uses gguf metadata for huge models without parameter size in repo id', () {
+      final deepseek = OpenModel.fromHuggingFace({
+        'id': 'ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF',
+        'author': 'ISTA-DASLab',
+        'gguf': {
+          'total': 196613849600,
+          'totalFileSize': 110595290816,
+        },
+        'siblings': [
+          {'rfilename': 'DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf'},
+        ],
+      });
+
+      expect(deepseek.parameterSizeB, '196.6');
+      expect(deepseek.hasExactSizes, isFalse);
+      expect(deepseek.downloadSizeMb, greaterThan(100000));
+      expect(deepseek.isTooLargeForPhone(deviceRamGb: 8.0), isTrue);
+
+      final fallbackTotalSizeOnly = OpenModel.fromHuggingFace({
+        'id': 'owner/Mystery-Model-GGUF',
+        'author': 'owner',
+        'gguf': {
+          'totalFileSize': 110595290816,
+        },
+        'siblings': [
+          {'rfilename': 'Mystery-IQ4_NL.gguf'},
+        ],
+      });
+
+      expect(fallbackTotalSizeOnly.downloadSizeMb, 105472);
+      expect(fallbackTotalSizeOnly.isTooLargeForPhone(deviceRamGb: 8.0), isTrue);
+    });
   });
 }

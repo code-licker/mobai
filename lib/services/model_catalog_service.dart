@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/services.dart';
 import 'package:mobai/models/open_model.dart';
 import 'package:mobai/services/hf_url_parser.dart';
+import 'package:mobai/services/storage_service.dart';
 
 enum ModelSortOption {
   popular('Popular'),
@@ -52,7 +53,7 @@ class ModelCatalogService {
     String? searchQuery,
     ModelSortOption sortOption = ModelSortOption.popular,
     String? pageUrl,
-    int limit = 35,
+    int limit = 100,
   }) async {
     try {
       return await _fetchModelsPageFromHuggingFace(
@@ -77,7 +78,7 @@ class ModelCatalogService {
   Future<List<OpenModel>> fetchModels({
     String? searchQuery,
     ModelSortOption sortOption = ModelSortOption.popular,
-    int limit = 35,
+    int limit = 100,
   }) async {
     final page = await fetchModelsPage(
       searchQuery: searchQuery,
@@ -98,15 +99,31 @@ class ModelCatalogService {
     return match?.group(1);
   }
 
+  Options? _hfAuthOptionsForUrl(String url) {
+    final token = StorageService().hfToken;
+    if (token != null && StorageService.isHuggingFaceHost(url)) {
+      return Options(headers: {'Authorization': 'Bearer $token'});
+    }
+    return null;
+  }
+
+  Options _hfRequestOptions(String url, {bool multiList = false}) {
+    final auth = _hfAuthOptionsForUrl(url);
+    return Options(
+      headers: auth?.headers,
+      listFormat: multiList ? ListFormat.multi : null,
+    );
+  }
+
   Future<ModelCatalogPage> _fetchModelsPageFromHuggingFace({
     String? searchQuery,
     ModelSortOption sortOption = ModelSortOption.popular,
     String? pageUrl,
-    int limit = 35,
+    int limit = 100,
   }) async {
     final Response<dynamic> response;
     if (pageUrl != null && pageUrl.isNotEmpty) {
-      response = await _dio.get(pageUrl);
+      response = await _dio.get(pageUrl, options: _hfAuthOptionsForUrl(pageUrl));
     } else {
       final serverSort =
           sortOption == ModelSortOption.latest ? 'createdAt' : 'downloads';
@@ -116,7 +133,17 @@ class ModelCatalogService {
         'sort': serverSort,
         'direction': -1,
         'limit': limit,
-        'full': true,
+        'expand[]': const [
+          'author',
+          'createdAt',
+          'downloads',
+          'gated',
+          'gguf',
+          'likes',
+          'safetensors',
+          'siblings',
+          'tags',
+        ],
       };
 
       if (searchQuery != null && searchQuery.isNotEmpty) {
@@ -126,6 +153,7 @@ class ModelCatalogService {
       response = await _dio.get(
         apiBaseUrl,
         queryParameters: queryParams,
+        options: _hfRequestOptions(apiBaseUrl, multiList: true),
       );
     }
 
@@ -164,6 +192,7 @@ class ModelCatalogService {
     final response = await _dio.get(
       '$apiBaseUrl/$cleanRepo',
       queryParameters: const {'blobs': true},
+      options: _hfAuthOptionsForUrl(apiBaseUrl),
     );
     if (response.statusCode == 200) {
       final dynamic rawData = response.data;
@@ -189,6 +218,7 @@ class ModelCatalogService {
         final response = await _dio.get(
           '$apiBaseUrl/$repoId',
           queryParameters: const {'blobs': true},
+          options: _hfAuthOptionsForUrl(apiBaseUrl),
         );
         if (response.statusCode == 200) {
           final dynamic rawData = response.data;
@@ -208,7 +238,12 @@ class ModelCatalogService {
         final matchedVariant = baseModel.variants.where(
           (v) =>
               v.fileName.toLowerCase() == targetLower ||
-              v.fileName.split('/').last.toLowerCase() == targetLower,
+              v.fileName.split('/').last.toLowerCase() == targetLower ||
+              v.parts.any(
+                (p) =>
+                    p.fileName.toLowerCase() == targetLower ||
+                    p.fileName.split('/').last.toLowerCase() == targetLower,
+              ),
         );
         final variant = matchedVariant.isNotEmpty ? matchedVariant.first : null;
 
@@ -220,17 +255,27 @@ class ModelCatalogService {
             parsed.directDownloadUrl!,
           );
           if (headSize != null && headSize > 0) {
-            resolvedSizeMb = (headSize / (1024 * 1024)).round().clamp(1, 100000);
+            resolvedSizeMb = (headSize / (1024 * 1024)).round().clamp(1, 10000000);
           }
         }
 
         final quant = variant?.quantization ??
             HfUrlParser.extractQuantization(parsed.fileName!);
+        final resolvedUrl = (variant != null && variant.downloadUrl.isNotEmpty)
+            ? variant.downloadUrl
+            : parsed.directDownloadUrl!;
+        final reorderedVariants = variant != null
+            ? [
+                variant,
+                ...baseModel.variants.where((v) => v != variant),
+              ]
+            : baseModel.variants;
         return baseModel.copyWith(
-          downloadUrl: parsed.directDownloadUrl,
+          downloadUrl: resolvedUrl,
           quantization: quant,
           downloadSizeMb: resolvedSizeMb,
-          minRamGb: ((resolvedSizeMb / 1024) * 1.5).ceil().clamp(2, 64),
+          minRamGb: (((resolvedSizeMb / 1024) * 1.5).ceil() + 1).clamp(2, 2048),
+          variants: reorderedVariants,
         );
       }
 

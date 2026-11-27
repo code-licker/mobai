@@ -1,9 +1,53 @@
+class SplitShardInfo {
+  final String prefix;
+  final int partNumber;
+  final int totalParts;
+
+  const SplitShardInfo({
+    required this.prefix,
+    required this.partNumber,
+    required this.totalParts,
+  });
+}
+
+class GgufPart {
+  final String fileName;
+  final int partNumber;
+  final int? sizeBytes;
+  final String downloadUrl;
+
+  const GgufPart({
+    required this.fileName,
+    required this.partNumber,
+    this.sizeBytes,
+    required this.downloadUrl,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'fileName': fileName,
+    'partNumber': partNumber,
+    'sizeBytes': sizeBytes,
+    'downloadUrl': downloadUrl,
+  };
+
+  factory GgufPart.fromJson(Map<String, dynamic> json) {
+    return GgufPart(
+      fileName: (json['fileName'] ?? '').toString(),
+      partNumber: (json['partNumber'] as num?)?.toInt() ?? 1,
+      sizeBytes: (json['sizeBytes'] as num?)?.toInt(),
+      downloadUrl: (json['downloadUrl'] ?? '').toString(),
+    );
+  }
+}
+
 class GgufVariant {
   final String fileName;
   final String quantization;
   final int? sizeBytes;
   final String downloadUrl;
   final bool isAuxiliary;
+  final List<GgufPart> parts;
+  final int expectedParts;
 
   const GgufVariant({
     required this.fileName,
@@ -11,10 +55,32 @@ class GgufVariant {
     this.sizeBytes,
     required this.downloadUrl,
     this.isAuxiliary = false,
+    this.parts = const [],
+    this.expectedParts = 1,
   });
 
   int get sizeMb =>
       sizeBytes != null ? (sizeBytes! / (1024 * 1024)).round() : 0;
+
+  bool get isSplit => expectedParts > 1 || parts.length > 1;
+
+  int get partCount => expectedParts > parts.length
+      ? expectedParts
+      : (parts.isNotEmpty ? parts.length : 1);
+
+  bool get hasMissingParts => parts.isNotEmpty && parts.length < partCount;
+
+  /// Ordered shard parts to download (1-element fallback for single-file GGUFs).
+  List<GgufPart> get resolvedParts => parts.isNotEmpty
+      ? parts
+      : [
+          GgufPart(
+            fileName: fileName,
+            partNumber: 1,
+            sizeBytes: sizeBytes,
+            downloadUrl: downloadUrl,
+          ),
+        ];
 
   Map<String, dynamic> toJson() => {
     'fileName': fileName,
@@ -22,10 +88,19 @@ class GgufVariant {
     'sizeBytes': sizeBytes,
     'downloadUrl': downloadUrl,
     'isAuxiliary': isAuxiliary,
+    if (parts.isNotEmpty) 'parts': parts.map((p) => p.toJson()).toList(),
+    if (expectedParts > 1) 'expectedParts': expectedParts,
   };
 
   factory GgufVariant.fromJson(Map<String, dynamic> json) {
     final fileName = (json['fileName'] ?? '').toString();
+    final rawParts = json['parts'];
+    final parsedParts = rawParts is List
+        ? rawParts
+            .whereType<Map<String, dynamic>>()
+            .map(GgufPart.fromJson)
+            .toList()
+        : const <GgufPart>[];
     return GgufVariant(
       fileName: fileName,
       quantization: (json['quantization'] ?? 'GGUF').toString(),
@@ -34,6 +109,9 @@ class GgufVariant {
       isAuxiliary:
           (json['isAuxiliary'] as bool?) ??
           OpenModel.isAuxiliaryGgufFile(fileName),
+      parts: parsedParts,
+      expectedParts: (json['expectedParts'] as num?)?.toInt() ??
+          (parsedParts.isNotEmpty ? parsedParts.length : 1),
     );
   }
 }
@@ -54,6 +132,7 @@ class OpenModel {
   final DateTime? createdAt;
   final int downloads;
   final int likes;
+  final bool isGated;
 
   OpenModel({
     required this.id,
@@ -71,6 +150,7 @@ class OpenModel {
     this.createdAt,
     this.downloads = 0,
     this.likes = 0,
+    this.isGated = false,
   });
 
   /// Returns true for auxiliary GGUFs (MTP speculative heads, mmproj vision
@@ -78,6 +158,28 @@ class OpenModel {
   static bool isAuxiliaryGgufFile(String fileName) {
     final lower = fileName.split(RegExp(r'[/\\]')).last.toLowerCase();
     return RegExp(r'(^|[-_.])(mmproj|mtp|draft)([-_.]|$)').hasMatch(lower);
+  }
+
+  /// Extracts split shard metadata from filenames formatted like
+  /// `Model-IQ1_M-00001-of-00004.gguf`. Returns null for normal single GGUFs.
+  static SplitShardInfo? parseSplitShard(String fileName) {
+    final match = RegExp(
+      r'^(.+?)-(\d{5})-of-(\d{5})\.gguf$',
+      caseSensitive: false,
+    ).firstMatch(fileName.trim());
+    if (match == null) return null;
+    final prefix = match.group(1);
+    final part = int.tryParse(match.group(2) ?? '');
+    final total = int.tryParse(match.group(3) ?? '');
+    if (prefix == null ||
+        part == null ||
+        total == null ||
+        total <= 1 ||
+        part < 1 ||
+        part > total) {
+      return null;
+    }
+    return SplitShardInfo(prefix: prefix, partNumber: part, totalParts: total);
   }
 
   factory OpenModel.fromJson(Map<String, dynamic> json) {
@@ -126,17 +228,21 @@ class OpenModel {
           : null,
       downloads: (json['downloads'] as num?)?.toInt() ?? 0,
       likes: (json['likes'] as num?)?.toInt() ?? 0,
+      isGated: (json['is_gated'] as bool?) ?? false,
     );
   }
 
   /// Extracts all downloadable `.gguf` variants from a Hugging Face `siblings` list.
+  /// Multi-part shards (`...-00001-of-0000N.gguf`) are grouped into a single
+  /// logical variant with summed byte size, ordered after single-file GGUFs.
   static List<GgufVariant> parseGgufVariantsFromSiblings(
     String repoId,
     dynamic siblings,
   ) {
     if (siblings is! List || siblings.isEmpty) return const [];
 
-    final rawVariants = <GgufVariant>[];
+    final singleVariants = <GgufVariant>[];
+    final splitGroups = <String, List<(int? size, String url, SplitShardInfo info, String fname)>>{};
     final quantRegex = RegExp(
       r'(Q[0-9]_[A-Z0-9_]+|IQ[0-9]_[A-Z0-9_]+|FP16|BF16|F16|F32)',
       caseSensitive: false,
@@ -145,21 +251,33 @@ class OpenModel {
     for (final s in siblings) {
       if (s is Map && s['rfilename'] is String) {
         final fname = s['rfilename'] as String;
-        if (fname.toLowerCase().endsWith('.gguf')) {
-          final size = (s['size'] as num?)?.toInt();
+        if (!fname.toLowerCase().endsWith('.gguf')) continue;
+        final size = (s['size'] as num?)?.toInt();
+        final encodedPath = fname
+            .split('/')
+            .map(Uri.encodeComponent)
+            .join('/');
+        final url = 'https://huggingface.co/$repoId/resolve/main/$encodedPath';
+
+        final splitInfo = parseSplitShard(fname);
+        if (splitInfo != null) {
+          final groupKey =
+              '${splitInfo.prefix.toLowerCase()}::${splitInfo.totalParts}';
+          splitGroups.putIfAbsent(groupKey, () => []).add((
+            size,
+            url,
+            splitInfo,
+            fname,
+          ));
+        } else {
           final m = quantRegex.firstMatch(fname);
           final quant = m != null ? m.group(1)!.toUpperCase() : 'GGUF';
-          final encodedPath = fname
-              .split('/')
-              .map(Uri.encodeComponent)
-              .join('/');
-          rawVariants.add(
+          singleVariants.add(
             GgufVariant(
               fileName: fname,
               quantization: quant,
               sizeBytes: size,
-              downloadUrl:
-                  'https://huggingface.co/$repoId/resolve/main/$encodedPath',
+              downloadUrl: url,
               isAuxiliary: isAuxiliaryGgufFile(fname),
             ),
           );
@@ -167,13 +285,52 @@ class OpenModel {
       }
     }
 
-    if (rawVariants.isEmpty) return const [];
+    final groupedVariants = <GgufVariant>[...singleVariants];
+    for (final entries in splitGroups.values) {
+      entries.sort((a, b) => a.$3.partNumber.compareTo(b.$3.partNumber));
+      final first = entries.first;
+      final prefix = first.$3.prefix;
+      final m = quantRegex.firstMatch(prefix);
+      final quant = m != null ? m.group(1)!.toUpperCase() : 'GGUF';
+
+      int sumBytes = 0;
+      bool hasKnownSize = false;
+      final parts = <GgufPart>[];
+      for (final item in entries) {
+        if (item.$1 != null && item.$1! > 0) {
+          sumBytes += item.$1!;
+          hasKnownSize = true;
+        }
+        parts.add(
+          GgufPart(
+            fileName: item.$4,
+            partNumber: item.$3.partNumber,
+            sizeBytes: item.$1,
+            downloadUrl: item.$2,
+          ),
+        );
+      }
+
+      groupedVariants.add(
+        GgufVariant(
+          fileName: first.$4,
+          quantization: quant,
+          sizeBytes: hasKnownSize ? sumBytes : null,
+          downloadUrl: first.$2,
+          isAuxiliary: isAuxiliaryGgufFile(prefix),
+          parts: parts,
+          expectedParts: first.$3.totalParts,
+        ),
+      );
+    }
+
+    if (groupedVariants.isEmpty) return const [];
 
     // Filter out auxiliary files (mmproj, mtp-, draft-) if main model weights exist
-    final primaryWeights = rawVariants
+    final primaryWeights = groupedVariants
         .where((v) => !v.isAuxiliary)
         .toList();
-    final candidates = primaryWeights.isNotEmpty ? primaryWeights : rawVariants;
+    final candidates = primaryWeights.isNotEmpty ? primaryWeights : groupedVariants;
 
     const preferredOrder = [
       'Q4_K_M',
@@ -186,6 +343,10 @@ class OpenModel {
     ];
 
     candidates.sort((a, b) {
+      // Always prefer single-file GGUFs over multi-part splits by default.
+      if (a.isSplit != b.isSplit) {
+        return a.isSplit ? 1 : -1;
+      }
       final idxA = preferredOrder.indexOf(a.quantization);
       final idxB = preferredOrder.indexOf(b.quantization);
       if (idxA != -1 && idxB != -1) return idxA.compareTo(idxB);
@@ -247,14 +408,29 @@ class OpenModel {
 
     // Extract parameter size in billions (e.g. 0.5, 1, 3, 7, 8, 14, 70)
     String paramSize = '1.0';
+    bool hasKnownParams = false;
     final safetensors = json['safetensors'];
+    final ggufMeta = json['gguf'];
     if (safetensors is Map && safetensors['total'] is num) {
       final totalParams = safetensors['total'] as num;
-      paramSize = (totalParams / 1e9).toStringAsFixed(1);
-    } else {
-      final paramMatch = RegExp(r'(?:^|[\s\-_])([0-9]+(?:\.[0-9]+)?)[bB](?:[\s\-_]|$)').firstMatch(rawId);
+      if (totalParams > 0) {
+        paramSize = (totalParams / 1e9).toStringAsFixed(1);
+        hasKnownParams = true;
+      }
+    } else if (ggufMeta is Map && ggufMeta['total'] is num) {
+      final totalParams = ggufMeta['total'] as num;
+      if (totalParams > 0) {
+        paramSize = (totalParams / 1e9).toStringAsFixed(1);
+        hasKnownParams = true;
+      }
+    }
+    if (!hasKnownParams) {
+      final paramMatch = RegExp(
+        r'(?:^|[\s\-_])([0-9]+(?:\.[0-9]+)?)[bB](?:[\s\-_]|$)',
+      ).firstMatch(rawId);
       if (paramMatch != null && paramMatch.group(1) != null) {
         paramSize = paramMatch.group(1)!;
+        hasKnownParams = true;
       }
     }
 
@@ -263,20 +439,31 @@ class OpenModel {
     final primaryVariant = variants.isNotEmpty ? variants.first : null;
     final String quantization = primaryVariant?.quantization ?? 'Q4_K_M';
     final int? detectedSizeBytes = primaryVariant?.sizeBytes;
+    final int? ggufTotalFileSize =
+        (ggufMeta is Map && ggufMeta['totalFileSize'] is num)
+            ? (ggufMeta['totalFileSize'] as num).toInt()
+            : null;
 
     // Estimate or calculate download size in MB
     final double paramNum = double.tryParse(paramSize) ?? 1.0;
     int downloadSizeMb;
     if (detectedSizeBytes != null && detectedSizeBytes > 0) {
       downloadSizeMb = (detectedSizeBytes / (1024 * 1024)).round();
+    } else if (!hasKnownParams &&
+        ggufTotalFileSize != null &&
+        ggufTotalFileSize > 0) {
+      downloadSizeMb = (ggufTotalFileSize / (1024 * 1024)).round().clamp(
+        1,
+        2000000,
+      );
     } else {
-      // Realistic GGUF 4-bit size estimation: ~550 MB per 1B params + ~150 MB base
-      downloadSizeMb = (paramNum * 550 + 150).round().clamp(200, 48000);
+      final mbPerB = estimatedMbPerBillionParams(quantization);
+      downloadSizeMb = (paramNum * mbPerB + 150).round().clamp(200, 2000000);
     }
 
     // Minimum RAM required calculation
     final minRamGb = ((downloadSizeMb / 1024) * 1.5).ceil() + 1;
-    final clampedRamGb = minRamGb.clamp(2, 64);
+    final clampedRamGb = minRamGb.clamp(2, 2048);
 
     // Leave downloadUrl empty if no direct .gguf file was listed in siblings so
     // ModelManagerService resolves the actual file list before downloading.
@@ -284,6 +471,9 @@ class OpenModel {
 
     final downloads = (json['downloads'] as num?)?.toInt() ?? 0;
     final likes = (json['likes'] as num?)?.toInt() ?? 0;
+    final gatedRaw = json['gated'];
+    final isGated =
+        gatedRaw != null && gatedRaw != false && gatedRaw != 'false';
     final rawDate = json['createdAt'] ?? json['lastModified'];
     final createdAt = rawDate != null ? DateTime.tryParse(rawDate.toString()) : null;
     String stats = '';
@@ -310,10 +500,42 @@ class OpenModel {
       createdAt: createdAt,
       downloads: downloads,
       likes: likes,
+      isGated: isGated,
     );
   }
 
+  /// Estimated megabytes per billion parameters for common GGUF quantizations
+  /// when exact per-file byte sizes have not yet been fetched from HF blobs.
+  static double estimatedMbPerBillionParams(String quantization) {
+    final q = quantization.toUpperCase();
+    if (q.startsWith('IQ1')) return 220.0;
+    if (q.startsWith('IQ2') || q.startsWith('Q2')) return 330.0;
+    if (q.startsWith('IQ3') || q.startsWith('Q3')) return 450.0;
+    if (q.startsWith('IQ4') || q.startsWith('Q4')) return 560.0;
+    if (q.startsWith('Q5')) return 700.0;
+    if (q.startsWith('Q6')) return 820.0;
+    if (q.startsWith('Q8')) return 1060.0;
+    if (q == 'FP16' || q == 'BF16' || q == 'F16') return 2000.0;
+    if (q == 'F32') return 4000.0;
+    return 560.0;
+  }
+
+  /// True when at least one variant already carries an exact byte count.
+  bool get hasExactSizes =>
+      variants.any((v) => v.sizeBytes != null && v.sizeBytes! > 0);
+
   double get paramSizeNum => double.tryParse(parameterSizeB) ?? 1.0;
+
+  GgufVariant? get primaryVariant =>
+      variants.isNotEmpty ? variants.first : null;
+
+  int get partCount => primaryVariant?.partCount ?? 1;
+
+  bool get isSplit => partCount > 1;
+
+  /// True when the model exceeds available device RAM or the >12 GB mobile limit.
+  bool isTooLargeForPhone({double deviceRamGb = 8.0}) =>
+      minRamGb > deviceRamGb || minRamGb > 12;
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -332,6 +554,7 @@ class OpenModel {
     if (createdAt != null) 'created_at': createdAt!.toIso8601String(),
     'downloads': downloads,
     'likes': likes,
+    if (isGated) 'is_gated': isGated,
   };
 
   OpenModel copyWith({
@@ -350,6 +573,7 @@ class OpenModel {
     DateTime? createdAt,
     int? downloads,
     int? likes,
+    bool? isGated,
   }) {
     return OpenModel(
       id: id ?? this.id,
@@ -367,6 +591,7 @@ class OpenModel {
       createdAt: createdAt ?? this.createdAt,
       downloads: downloads ?? this.downloads,
       likes: likes ?? this.likes,
+      isGated: isGated ?? this.isGated,
     );
   }
 }

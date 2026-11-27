@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:mobai/models/chat_session.dart';
 import 'package:mobai/screens/model_selector_screen.dart';
+import 'package:mobai/screens/widgets/active_downloads_sheet.dart';
 import 'package:mobai/services/chat_session_service.dart';
 import 'package:mobai/services/local_inference_service.dart';
 import 'package:mobai/services/model_manager_service.dart';
@@ -393,6 +394,7 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ),
         actions: [
+          const DownloadIndicatorButton(),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
             tooltip: 'Model Settings',

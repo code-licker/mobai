@@ -8,6 +8,7 @@ class DownloadedModel {
   final int sizeBytes;
   final DateTime downloadedAt;
   final String sourceUrl;
+  final List<String> partFileNames;
 
   const DownloadedModel({
     required this.modelId,
@@ -19,9 +20,16 @@ class DownloadedModel {
     required this.sizeBytes,
     required this.downloadedAt,
     required this.sourceUrl,
+    this.partFileNames = const [],
   });
 
   double get sizeMb => sizeBytes / (1024 * 1024);
+
+  /// All shard filenames belonging to this model (single-item list for normal models).
+  List<String> get allFileNames =>
+      partFileNames.isNotEmpty ? partFileNames : [fileName];
+
+  int get partCount => allFileNames.length;
 
   Map<String, dynamic> toJson() => {
     'modelId': modelId,
@@ -33,9 +41,14 @@ class DownloadedModel {
     'sizeBytes': sizeBytes,
     'downloadedAt': downloadedAt.toIso8601String(),
     'sourceUrl': sourceUrl,
+    if (partFileNames.isNotEmpty) 'partFileNames': partFileNames,
   };
 
   factory DownloadedModel.fromJson(Map<String, dynamic> json) {
+    final rawParts = json['partFileNames'];
+    final parts = rawParts is List
+        ? rawParts.map((e) => e.toString()).where((s) => s.isNotEmpty).toList()
+        : const <String>[];
     return DownloadedModel(
       modelId: (json['modelId'] ?? '').toString(),
       name: (json['name'] ?? '').toString(),
@@ -48,6 +61,7 @@ class DownloadedModel {
           ? DateTime.tryParse(json['downloadedAt'].toString()) ?? DateTime.now()
           : DateTime.now(),
       sourceUrl: (json['sourceUrl'] ?? '').toString(),
+      partFileNames: parts,
     );
   }
 
@@ -61,6 +75,7 @@ class DownloadedModel {
     int? sizeBytes,
     DateTime? downloadedAt,
     String? sourceUrl,
+    List<String>? partFileNames,
   }) {
     return DownloadedModel(
       modelId: modelId ?? this.modelId,
@@ -72,6 +87,7 @@ class DownloadedModel {
       sizeBytes: sizeBytes ?? this.sizeBytes,
       downloadedAt: downloadedAt ?? this.downloadedAt,
       sourceUrl: sourceUrl ?? this.sourceUrl,
+      partFileNames: partFileNames ?? this.partFileNames,
     );
   }
 }

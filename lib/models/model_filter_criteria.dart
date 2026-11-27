@@ -18,14 +18,16 @@ class ModelFilterCriteria {
   final RangeValues? paramsRangeB;
   final RangeValues? ramRangeGb;
   final Set<String> selectedProviders;
-  final bool phoneReadyOnly;
+  final bool hideNotRecommended;
+  final bool downloadedOnly;
 
   const ModelFilterCriteria({
     this.sizeRangeMb,
     this.paramsRangeB,
     this.ramRangeGb,
     this.selectedProviders = const {},
-    this.phoneReadyOnly = false,
+    this.hideNotRecommended = false,
+    this.downloadedOnly = false,
   });
 
   static double effectiveMaxSizeMbFor(Iterable<OpenModel> models) {
@@ -86,7 +88,8 @@ class ModelFilterCriteria {
       isParamsFilterActiveWithMax(maxParamsB) ||
       isRamFilterActiveWithMax(maxRamGb) ||
       isProviderFilterActive ||
-      phoneReadyOnly;
+      hideNotRecommended ||
+      downloadedOnly;
 
   bool get isActive => isActiveWithBounds();
 
@@ -100,7 +103,8 @@ class ModelFilterCriteria {
     if (isParamsFilterActiveWithMax(maxParamsB)) count++;
     if (isRamFilterActiveWithMax(maxRamGb)) count++;
     if (isProviderFilterActive) count += selectedProviders.length;
-    if (phoneReadyOnly) count++;
+    if (hideNotRecommended) count++;
+    if (downloadedOnly) count++;
     return count;
   }
 
@@ -111,11 +115,11 @@ class ModelFilterCriteria {
     double maxSizeMb = defaultMaxSizeMb,
     double maxParamsB = defaultMaxParamsB,
     double maxRamGb = defaultMaxRamGb,
+    double deviceRamGb = 8.0,
   }) {
-    if (phoneReadyOnly) {
-      if (model.paramSizeNum > 8.5 || model.minRamGb > 10) {
-        return false;
-      }
+    if (hideNotRecommended &&
+        model.isTooLargeForPhone(deviceRamGb: deviceRamGb)) {
+      return false;
     }
 
     if (sizeRangeMb != null) {
@@ -159,7 +163,8 @@ class ModelFilterCriteria {
     RangeValues? paramsRangeB,
     RangeValues? ramRangeGb,
     Set<String>? selectedProviders,
-    bool? phoneReadyOnly,
+    bool? hideNotRecommended,
+    bool? downloadedOnly,
     bool clearSize = false,
     bool clearParams = false,
     bool clearRam = false,
@@ -169,7 +174,8 @@ class ModelFilterCriteria {
       paramsRangeB: clearParams ? null : (paramsRangeB ?? this.paramsRangeB),
       ramRangeGb: clearRam ? null : (ramRangeGb ?? this.ramRangeGb),
       selectedProviders: selectedProviders ?? this.selectedProviders,
-      phoneReadyOnly: phoneReadyOnly ?? this.phoneReadyOnly,
+      hideNotRecommended: hideNotRecommended ?? this.hideNotRecommended,
+      downloadedOnly: downloadedOnly ?? this.downloadedOnly,
     );
   }
 

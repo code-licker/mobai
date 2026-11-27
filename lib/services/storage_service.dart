@@ -27,16 +27,34 @@ class StorageService extends ChangeNotifier {
   static const String _prefRootPathKey = 'mobai_storage_root_path';
   static const String _prefConfiguredKey = 'mobai_storage_configured';
   static const String _prefIsDefaultKey = 'mobai_storage_is_default';
+  static const String _prefHfTokenKey = 'mobai_hf_token';
 
   bool _isInitialized = false;
   bool _isConfigured = false;
   bool _isUsingDefault = true;
   String? _defaultRootPath;
+  String? _hfToken;
   late Directory _rootDirectory;
 
   bool get isInitialized => _isInitialized;
   bool get isConfigured => _isConfigured;
   bool get isUsingDefault => _isUsingDefault;
+  String? get hfToken {
+    final t = _hfToken?.trim();
+    return (t == null || t.isEmpty) ? null : t;
+  }
+
+  bool get hasHfToken => hfToken != null;
+
+  static bool isHuggingFaceHost(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
+    final host = uri.host.toLowerCase();
+    return host == 'huggingface.co' ||
+        host.endsWith('.huggingface.co') ||
+        host == 'hf.co' ||
+        host.endsWith('.hf.co');
+  }
 
   String get rootPath {
     if (!_isInitialized) {
@@ -121,6 +139,7 @@ class StorageService extends ChangeNotifier {
     final savedRoot = prefs.getString(_prefRootPathKey);
     _isConfigured = prefs.getBool(_prefConfiguredKey) ?? false;
     _isUsingDefault = prefs.getBool(_prefIsDefaultKey) ?? true;
+    _hfToken = prefs.getString(_prefHfTokenKey);
 
     String candidateRoot =
         (savedRoot != null && savedRoot.isNotEmpty) ? savedRoot : _defaultRootPath!;
@@ -150,13 +169,29 @@ class StorageService extends ChangeNotifier {
     Directory rootDir, {
     bool configured = true,
     bool isDefault = true,
+    String? hfToken,
   }) async {
     _defaultRootPath = rootDir.path;
     _rootDirectory = rootDir;
     _isConfigured = configured;
     _isUsingDefault = isDefault;
+    _hfToken = hfToken;
     await _ensureDirectoriesExist(_rootDirectory);
     _isInitialized = true;
+    notifyListeners();
+  }
+
+  Future<void> setHfToken(String? token) async {
+    final cleaned = token?.trim();
+    _hfToken = (cleaned == null || cleaned.isEmpty) ? null : cleaned;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (_hfToken == null) {
+        await prefs.remove(_prefHfTokenKey);
+      } else {
+        await prefs.setString(_prefHfTokenKey, _hfToken!);
+      }
+    } catch (_) {}
     notifyListeners();
   }
 

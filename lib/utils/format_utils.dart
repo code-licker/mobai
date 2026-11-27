@@ -1,14 +1,26 @@
-/// Formats a size given in megabytes (`MiB`) into human-friendly `MB` or `GB`.
+/// Formats a size given in megabytes (`MiB`) into human-friendly `MB`, `GB`, or `TB`.
 String formatSizeMb(num mb) {
+  if (mb >= 1024 * 1024) {
+    return '${(mb / (1024 * 1024)).toStringAsFixed(2)} TB';
+  }
   if (mb >= 1024) {
     return '${(mb / 1024).toStringAsFixed(1)} GB';
   }
   return '${mb.round()} MB';
 }
 
-/// Formats a byte count into `B`, `KB`, `MB`, or `GB`.
+/// Formats a size in megabytes with a multi-part suffix when `partCount > 1`.
+String formatSizeWithParts(num mb, {int partCount = 1}) {
+  final base = formatSizeMb(mb);
+  return partCount > 1 ? '$base ($partCount parts)' : base;
+}
+
+/// Formats a byte count into `B`, `KB`, `MB`, `GB`, or `TB`.
 String formatBytes(int bytes) {
   if (bytes <= 0) return '0 B';
+  if (bytes >= 1024 * 1024 * 1024 * 1024) {
+    return '${(bytes / (1024 * 1024 * 1024 * 1024)).toStringAsFixed(2)} TB';
+  }
   if (bytes >= 1024 * 1024 * 1024) {
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }

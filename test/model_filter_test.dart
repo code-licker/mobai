@@ -77,9 +77,7 @@ void main() {
     });
 
     test('filters models by minimum RAM range', () {
-      final criteria = ModelFilterCriteria(
-        ramRangeGb: const RangeValues(1, 4),
-      );
+      final criteria = ModelFilterCriteria(ramRangeGb: const RangeValues(1, 4));
       expect(criteria.isRamFilterActive, true);
       expect(criteria.matches(llama), true); // 4 GB
       expect(criteria.matches(qwen), true); // 3 GB
@@ -87,9 +85,7 @@ void main() {
     });
 
     test('filters models by provider', () {
-      final criteria = ModelFilterCriteria(
-        selectedProviders: {'Meta', 'Qwen'},
-      );
+      final criteria = ModelFilterCriteria(selectedProviders: {'Meta', 'Qwen'});
       expect(criteria.isProviderFilterActive, true);
       expect(criteria.matches(llama), true);
       expect(criteria.matches(qwen), true);
@@ -106,31 +102,52 @@ void main() {
       expect(criteria.matches(gemmaLarge), false);
     });
 
-    test('supports phoneReadyOnly and dynamic bounds for large 19.4GB models', () {
-      final large35B = OpenModel(
-        id: 'ornith/35b-a3b',
-        name: 'Ornith 1.5 35B A3B',
-        publisher: 'ornith-ai',
-        parameterSizeB: '35',
-        format: 'GGUF',
-        quantization: 'Q4_K_M',
-        downloadSizeMb: 19400,
-        minRamGb: 30,
-        downloadUrl: 'https://huggingface.co/...',
-        description: '35B model',
-        repoUrl: 'https://huggingface.co/...',
-      );
+    test(
+      'supports hideNotRecommended, downloadedOnly, and dynamic bounds for large 19.4GB models',
+      () {
+        final large35B = OpenModel(
+          id: 'ornith/35b-a3b',
+          name: 'Ornith 1.5 35B A3B',
+          publisher: 'ornith-ai',
+          parameterSizeB: '35',
+          format: 'GGUF',
+          quantization: 'Q4_K_M',
+          downloadSizeMb: 19400,
+          minRamGb: 30,
+          downloadUrl: 'https://huggingface.co/...',
+          description: '35B model',
+          repoUrl: 'https://huggingface.co/...',
+        );
 
-      final maxSize = ModelFilterCriteria.effectiveMaxSizeMbFor([llama, large35B]);
-      expect(maxSize, greaterThanOrEqualTo(30720.0));
+        final maxSize = ModelFilterCriteria.effectiveMaxSizeMbFor([
+          llama,
+          large35B,
+        ]);
+        expect(maxSize, greaterThanOrEqualTo(30720.0));
 
-      final initial = ModelFilterCriteria.initial();
-      expect(initial.matches(large35B, maxSizeMb: maxSize), true);
+        final initial = ModelFilterCriteria.initial();
+        expect(initial.matches(large35B, maxSizeMb: maxSize), true);
 
-      final phoneOnly = initial.copyWith(phoneReadyOnly: true);
-      expect(phoneOnly.matches(llama), true);
-      expect(phoneOnly.matches(gemmaLarge), false);
-      expect(phoneOnly.matches(large35B), false);
-    });
+        final hideHeavy = initial.copyWith(hideNotRecommended: true);
+        expect(hideHeavy.isActive, isTrue);
+        expect(hideHeavy.matches(llama, deviceRamGb: 8.0), true);
+        expect(
+          hideHeavy.matches(gemmaLarge, deviceRamGb: 8.0),
+          false,
+        ); // 12 > 8
+        expect(
+          hideHeavy.matches(gemmaLarge, deviceRamGb: 16.0),
+          true,
+        ); // 12 <= 12 & <= 16
+        expect(
+          hideHeavy.matches(large35B, deviceRamGb: 16.0),
+          false,
+        ); // 30 > 12
+
+        final downloadedFilter = initial.copyWith(downloadedOnly: true);
+        expect(downloadedFilter.isActive, isTrue);
+        expect(downloadedFilter.activeFilterCount, 1);
+      },
+    );
   });
 }

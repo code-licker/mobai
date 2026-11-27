@@ -1,9 +1,14 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
 import 'package:mobai/models/chat_session.dart';
 import 'package:mobai/screens/chat_screen.dart';
 import 'package:mobai/screens/model_selector_screen.dart';
+import 'package:mobai/screens/widgets/active_downloads_sheet.dart';
+import 'package:mobai/screens/widgets/hf_token_dialog.dart';
 import 'package:mobai/screens/widgets/storage_setup_dialog.dart';
 import 'package:mobai/services/chat_session_service.dart';
+import 'package:mobai/services/download_notification_service.dart';
 import 'package:mobai/services/model_manager_service.dart';
 import 'package:mobai/services/storage_service.dart';
 
@@ -20,13 +25,21 @@ class _HomeScreenState extends State<HomeScreen> {
   final ModelManagerService _modelManager = ModelManagerService();
   String _selectedFilter = 'all'; // 'all' or 'history'
   bool _promptShownThisSession = false;
+  String _lastDownloadedIdsSig = '';
+  bool _lastHasActiveDownloads = false;
+  StreamSubscription<void>? _openDownloadsSub;
+  bool _isDownloadsSheetOpen = false;
 
   @override
   void initState() {
     super.initState();
+    _lastDownloadedIdsSig = _downloadedSignature();
+    _lastHasActiveDownloads = _modelManager.hasActiveDownloads;
     _chatService.addListener(_onServiceUpdate);
     _storageService.addListener(_onServiceUpdate);
-    _modelManager.addListener(_onServiceUpdate);
+    _modelManager.addListener(_onModelManagerUpdate);
+    _openDownloadsSub = DownloadNotificationService().onOpenDownloadsRequested
+        .listen((_) => _openDownloadsSheetFromNotification());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted &&
           !_promptShownThisSession &&
@@ -40,14 +53,40 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _openDownloadsSub?.cancel();
     _chatService.removeListener(_onServiceUpdate);
     _storageService.removeListener(_onServiceUpdate);
-    _modelManager.removeListener(_onServiceUpdate);
+    _modelManager.removeListener(_onModelManagerUpdate);
     super.dispose();
   }
 
+  void _openDownloadsSheetFromNotification() {
+    if (!mounted || _isDownloadsSheetOpen) return;
+    _isDownloadsSheetOpen = true;
+    showActiveDownloadsSheet(context).whenComplete(() {
+      if (mounted) {
+        _isDownloadsSheetOpen = false;
+      }
+    });
+  }
+
+  String _downloadedSignature() =>
+      _modelManager.downloadedModels.map((m) => m.modelId).join('|');
+
   void _onServiceUpdate() {
     if (mounted) setState(() {});
+  }
+
+  void _onModelManagerUpdate() {
+    if (!mounted) return;
+    final nextSig = _downloadedSignature();
+    final nextHasActive = _modelManager.hasActiveDownloads;
+    if (nextSig != _lastDownloadedIdsSig ||
+        nextHasActive != _lastHasActiveDownloads) {
+      _lastDownloadedIdsSig = nextSig;
+      _lastHasActiveDownloads = nextHasActive;
+      setState(() {});
+    }
   }
 
   void _navigateToModelSelector() {
@@ -134,85 +173,94 @@ class _HomeScreenState extends State<HomeScreen> {
     final theme = Theme.of(context);
     final sessions = _chatService.sessions;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'MobAI',
-          style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5),
-        ),
-        centerTitle: false,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.hub_outlined),
-            tooltip: 'Model Catalog',
-            onPressed: _navigateToModelSelector,
+    return PopScope(
+      canPop: !_modelManager.hasActiveDownloads,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _modelManager.hasActiveDownloads) {
+          DownloadNotificationService().moveToBackground();
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text(
+            'MobAI',
+            style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5),
           ),
-        ],
-      ),
-      // Sidebar menu with (New chat - Chat history) from requirements
-      drawer: _buildSidebarMenu(context),
-      body: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Top Header: Recent chats
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _selectedFilter == 'history' ? 'Chat History' : 'Recent Chats',
-                        style: theme.textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '${sessions.length} conversation${sessions.length == 1 ? '' : 's'}',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (sessions.isNotEmpty)
-                    TextButton.icon(
-                      style: TextButton.styleFrom(
-                        visualDensity: VisualDensity.compact,
-                        foregroundColor: theme.colorScheme.error,
-                      ),
-                      icon: const Icon(Icons.delete_sweep_outlined, size: 18),
-                      label: const Text('Clear', style: TextStyle(fontSize: 12)),
-                      onPressed: _confirmClearAllChats,
-                    ),
-                ],
-              ),
-            ),
-
-            const Divider(height: 1),
-
-            // Recent chats list
-            Expanded(
-              child: sessions.isEmpty
-                  ? _buildEmptyState(context)
-                  : ListView.builder(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
-                      itemCount: sessions.length,
-                      itemBuilder: (context, index) {
-                        final session = sessions[index];
-                        return _buildChatSessionCard(context, session);
-                      },
-                    ),
+          centerTitle: false,
+          actions: [
+            const DownloadIndicatorButton(),
+            IconButton(
+              icon: const Icon(Icons.hub_outlined),
+              tooltip: 'Model Catalog',
+              onPressed: _navigateToModelSelector,
             ),
           ],
         ),
+        // Sidebar menu with (New chat - Chat history) from requirements
+        drawer: _buildSidebarMenu(context),
+        body: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Top Header: Recent chats
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _selectedFilter == 'history' ? 'Chat History' : 'Recent Chats',
+                          style: theme.textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${sessions.length} conversation${sessions.length == 1 ? '' : 's'}',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (sessions.isNotEmpty)
+                      TextButton.icon(
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          foregroundColor: theme.colorScheme.error,
+                        ),
+                        icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+                        label: const Text('Clear', style: TextStyle(fontSize: 12)),
+                        onPressed: _confirmClearAllChats,
+                      ),
+                  ],
+                ),
+              ),
+
+              const Divider(height: 1),
+
+              // Recent chats list
+              Expanded(
+                child: sessions.isEmpty
+                    ? _buildEmptyState(context)
+                    : ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
+                        itemCount: sessions.length,
+                        itemBuilder: (context, index) {
+                          final session = sessions[index];
+                          return _buildChatSessionCard(context, session);
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
+        // New chat button at bottom matching wireframe Page 2
+        bottomSheet: _buildBottomNewChatBar(context),
       ),
-      // New chat button at bottom matching wireframe Page 2
-      bottomSheet: _buildBottomNewChatBar(context),
     );
   }
 
@@ -300,6 +348,20 @@ class _HomeScreenState extends State<HomeScreen> {
                 if (_storageService.isInitialized) {
                   showStorageSettingsSheet(context);
                 }
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.key_rounded, color: theme.colorScheme.onSurfaceVariant),
+              title: const Text('Hugging Face token', style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: Text(
+                _storageService.hasHfToken
+                    ? 'Configured (for gated models)'
+                    : 'Not set (optional)',
+                style: const TextStyle(fontSize: 11),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                showHfTokenDialog(context);
               },
             ),
 

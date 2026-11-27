@@ -4,6 +4,7 @@ import 'package:mobai/models/open_model.dart';
 import 'package:mobai/services/model_catalog_service.dart';
 import 'package:mobai/services/model_manager_service.dart';
 import 'package:mobai/services/storage_service.dart';
+import 'package:mobai/utils/format_utils.dart';
 
 class CustomModelDialogResult {
   final OpenModel model;
@@ -86,7 +87,9 @@ class _AddCustomModelDialogState extends State<_AddCustomModelDialog> {
       GgufVariant? selected;
       if (resolved.variants.isNotEmpty) {
         selected = resolved.variants.firstWhere(
-          (v) => v.downloadUrl == resolved.downloadUrl,
+          (v) =>
+              v.downloadUrl == resolved.downloadUrl ||
+              v.parts.any((p) => p.downloadUrl == resolved.downloadUrl),
           orElse: () => resolved.variants.first,
         );
       }
@@ -132,14 +135,20 @@ class _AddCustomModelDialogState extends State<_AddCustomModelDialog> {
         : _descController.text.trim();
 
     final variant = _selectedVariant;
+    final resolvedSizeMb = variant != null && variant.sizeMb > 0
+        ? variant.sizeMb
+        : sizeMb;
+    final reorderedVariants = variant != null
+        ? [variant, ...resolved.variants.where((v) => v != variant)]
+        : resolved.variants;
     final finalModel = resolved.copyWith(
       name: name,
       publisher: publisher,
-      downloadSizeMb: variant != null && variant.sizeMb > 0
-          ? variant.sizeMb
-          : sizeMb,
+      downloadSizeMb: resolvedSizeMb,
+      minRamGb: (((resolvedSizeMb / 1024) * 1.5).ceil() + 1).clamp(2, 2048),
       quantization: variant?.quantization ?? resolved.quantization,
       downloadUrl: variant?.downloadUrl ?? resolved.downloadUrl,
+      variants: reorderedVariants,
       description: desc,
     );
 
@@ -386,7 +395,9 @@ class _AddCustomModelDialogState extends State<_AddCustomModelDialog> {
               border: OutlineInputBorder(),
             ),
             items: variants.map((v) {
-              final sizeLabel = v.sizeMb > 0 ? ' (${v.sizeMb} MB)' : '';
+              final sizeLabel = v.sizeMb > 0
+                  ? ' (${formatSizeWithParts(v.sizeMb, partCount: v.partCount)})'
+                  : (v.isSplit ? ' (${v.partCount} parts)' : '');
               return DropdownMenuItem<GgufVariant>(
                 value: v,
                 child: Text(
@@ -404,6 +415,49 @@ class _AddCustomModelDialogState extends State<_AddCustomModelDialog> {
                   _sizeController.text = '${val.sizeMb}';
                 }
               });
+            },
+          ),
+          Builder(
+            builder: (context) {
+              final sizeMb = int.tryParse(_sizeController.text.trim()) ??
+                  _selectedVariant?.sizeMb ??
+                  _resolvedModel?.downloadSizeMb ??
+                  0;
+              final estRamGb = sizeMb > 0
+                  ? (((sizeMb / 1024) * 1.5).ceil() + 1)
+                  : (_resolvedModel?.minRamGb ?? 0);
+              final tooHeavy =
+                  estRamGb > _managerService.deviceRamGb || estRamGb > 12;
+              if (!tooHeavy) return const SizedBox.shrink();
+              return Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(top: 10),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.errorContainer.withAlpha(140),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.warning_amber_rounded,
+                      size: 16,
+                      color: theme.colorScheme.error,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Not recommended for phone (~$estRamGb GB RAM required). Likely to crash or fail with OOM.',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: theme.colorScheme.onErrorContainer,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
             },
           ),
         ],
