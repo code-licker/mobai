@@ -59,7 +59,7 @@ android/app/src/main/
     └── DownloadNotificationReceiver.kt      # Notification Pause/Resume/Cancel broadcast handler
 
 .github/workflows/
-└── build-master-apk.yml                     # CI workflow on push to master: analyze, test & upload app-release.apk
+└── build-master-apk.yml                     # CI on push to master: analyze, test, bump pubspec.yaml ([skip ci]), APK & Release
 
 ios/Runner/
 └── AppDelegate.swift                        # MethodChannel handler for openUrl & getDeviceRamMb

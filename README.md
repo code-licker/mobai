@@ -109,9 +109,12 @@ cd android
 .\gradlew.bat :app:compileDebugKotlin :app:processDebugMainManifest
 ```
 
-### GitHub Actions Build Artifact
+### GitHub Actions Build & Release Pipeline
 
-Merging or pushing to `master` triggers `.github/workflows/build-master-apk.yml`, which runs `flutter analyze`, `flutter test`, and `flutter build apk --release`, then uploads `mobai-android-release-apk` (`app-release.apk`) as a downloadable workflow artifact.
+Merging or pushing to `master` triggers [.github/workflows/build-master-apk.yml](.github/workflows/build-master-apk.yml):
+1. Computes the next semantic version and build number (`X.Y.Z+<prev+1>`) from Conventional Commits since the latest `v*` Git tag (`!:` / `BREAKING CHANGE:` → **major**, `feat:` → **minor**, `fix:`/other → **patch**; bootstrapping from `pubspec.yaml` on the first release).
+2. Runs `flutter analyze` and `flutter test` first.
+3. Updates `version:` in [pubspec.yaml](pubspec.yaml), commits (`[skip ci]`) directly to `master`, builds `app-release.apk`, and publishes a **GitHub Release** (`vX.Y.Z`) with auto-generated release notes (preserving all historical releases while keeping `releases/latest/download/app-release.apk` pointed to the newest release) plus a backup Actions artifact. *(Pull `master` into feature/develop branches periodically so local `pubspec.yaml` stays in sync.)*
 
 ---
 
