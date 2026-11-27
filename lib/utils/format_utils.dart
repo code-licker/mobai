@@ -44,3 +44,21 @@ String formatRelativeReleaseDate(DateTime date, {DateTime? now}) {
   final month = date.month.toString().padLeft(2, '0');
   return '${date.year}-$month';
 }
+
+/// Formats integer counters (downloads, likes) concisely (e.g. `398`, `1.2k`, `3.7M`).
+String formatCompactCount(int count) {
+  if (count >= 1000000) {
+    return '${(count / 1000000).toStringAsFixed(1)}M';
+  }
+  if (count >= 1000) {
+    return '${(count / 1000).toStringAsFixed(1)}k';
+  }
+  return '$count';
+}
+
+/// Formats a calendar date as `YYYY-MM-DD`.
+String formatIsoDate(DateTime date) {
+  final m = date.month.toString().padLeft(2, '0');
+  final d = date.day.toString().padLeft(2, '0');
+  return '${date.year}-$m-$d';
+}

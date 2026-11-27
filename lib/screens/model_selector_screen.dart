@@ -804,7 +804,7 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
       BuildContext dialogContext, {
       required String label,
       required String url,
-      required bool emphasizePrimary,
+      String? warningText,
     }) {
       final theme = Theme.of(dialogContext);
       final hasUrl = isHttpUrl(url);
@@ -837,37 +837,61 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                     : theme.colorScheme.outline,
               ),
             ),
+            if (hasUrl && warningText != null) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade50,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.amber.shade300),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      Icons.warning_amber_rounded,
+                      size: 14,
+                      color: Colors.amber.shade900,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        warningText,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.amber.shade900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             if (hasUrl) ...[
               const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 6,
+              Row(
                 children: [
-                  if (emphasizePrimary)
-                    FilledButton.tonalIcon(
+                  Expanded(
+                    child: FilledButton.tonalIcon(
                       style: FilledButton.styleFrom(
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      icon: const Icon(Icons.open_in_new_rounded, size: 16),
-                      label: const Text('Open in Browser'),
-                      onPressed: () => openInBrowser(dialogContext, url),
-                    )
-                  else
-                    OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
                         visualDensity: VisualDensity.compact,
                       ),
                       icon: const Icon(Icons.open_in_new_rounded, size: 16),
                       label: const Text('Open'),
                       onPressed: () => openInBrowser(dialogContext, url),
                     ),
-                  OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      icon: const Icon(Icons.copy_rounded, size: 15),
+                      label: const Text('Copy'),
+                      onPressed: () => copyLink(dialogContext, url),
                     ),
-                    icon: const Icon(Icons.copy_rounded, size: 15),
-                    label: const Text('Copy'),
-                    onPressed: () => copyLink(dialogContext, url),
                   ),
                 ],
               ),
@@ -901,14 +925,14 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                 dialogContext,
                 label: 'Repository',
                 url: repoUrl,
-                emphasizePrimary: true,
               ),
               const SizedBox(height: 10),
               buildLinkBlock(
                 dialogContext,
                 label: 'Download URL',
                 url: downloadUrl,
-                emphasizePrimary: !isHttpUrl(repoUrl),
+                warningText:
+                    'Opening this .gguf URL in a browser will trigger a file download.',
               ),
             ],
           ),
@@ -919,6 +943,176 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
             child: const Text('Close'),
           ),
         ],
+      ),
+    );
+  }
+
+  void _showModelDetailsDialog(OpenModel model) {
+    final descriptionFuture = _managerService.ensureDescriptionLoaded(model);
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => FutureBuilder<OpenModel>(
+        future: descriptionFuture,
+        initialData: model,
+        builder: (context, snapshot) {
+          final theme = Theme.of(context);
+          final resolved = snapshot.data ?? model;
+          final isLoadingReadme =
+              snapshot.connectionState == ConnectionState.waiting &&
+              !resolved.hasFetchedDescription;
+
+          return AlertDialog(
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  resolved.name,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  resolved.publisher,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: _getPublisherColor(resolved.publisher),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        _buildDetailPill(
+                          context,
+                          '${resolved.parameterSizeB}B Params',
+                          Icons.auto_awesome,
+                        ),
+                        _buildDetailPill(
+                          context,
+                          resolved.format,
+                          Icons.extension_outlined,
+                        ),
+                        _buildDetailPill(
+                          context,
+                          resolved.quantization,
+                          Icons.tune,
+                        ),
+                        _buildDetailPill(
+                          context,
+                          formatSizeWithParts(
+                            resolved.downloadSizeMb,
+                            partCount: resolved.partCount,
+                          ),
+                          Icons.storage_rounded,
+                        ),
+                        _buildDetailPill(
+                          context,
+                          'Min ${resolved.minRamGb} GB RAM',
+                          Icons.memory_rounded,
+                        ),
+                        if (!resolved.id.startsWith('local:')) ...[
+                          _buildDetailPill(
+                            context,
+                            '${formatCompactCount(resolved.downloads)} downloads',
+                            Icons.download_outlined,
+                          ),
+                          _buildDetailPill(
+                            context,
+                            '${formatCompactCount(resolved.likes)} likes',
+                            Icons.favorite_outline_rounded,
+                          ),
+                        ],
+                        if (resolved.createdAt != null)
+                          _buildDetailPill(
+                            context,
+                            '${formatIsoDate(resolved.createdAt!)} (${formatRelativeReleaseDate(resolved.createdAt!)})',
+                            Icons.calendar_today_rounded,
+                          ),
+                        if (resolved.license != null &&
+                            resolved.license!.isNotEmpty)
+                          _buildDetailPill(
+                            context,
+                            resolved.license!,
+                            Icons.gavel_rounded,
+                          ),
+                        if (resolved.baseModel != null &&
+                            resolved.baseModel!.isNotEmpty)
+                          _buildDetailPill(
+                            context,
+                            'Base: ${resolved.baseModel}',
+                            Icons.account_tree_outlined,
+                          ),
+                        if (resolved.isGated)
+                          _buildDetailPill(
+                            context,
+                            'Gated Repo',
+                            Icons.lock_outline_rounded,
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    Text(
+                      'Description',
+                      style: theme.textTheme.labelLarge?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    if (isLoadingReadme) ...[
+                      const LinearProgressIndicator(minHeight: 2),
+                      const SizedBox(height: 8),
+                    ],
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest
+                            .withAlpha(70),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: theme.colorScheme.outlineVariant.withAlpha(90),
+                        ),
+                      ),
+                      child: SelectableText(
+                        resolved.description,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          height: 1.4,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton.icon(
+                icon: const Icon(Icons.link_rounded, size: 16),
+                label: const Text('Model Links'),
+                onPressed: () {
+                  Navigator.pop(dialogContext);
+                  _showModelLinkDialog(resolved);
+                },
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -1612,6 +1806,18 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                                   ),
                                 ),
                               ),
+                              if (!model.id.startsWith('local:')) ...[
+                                _buildStatBadge(
+                                  theme,
+                                  Icons.download_outlined,
+                                  formatCompactCount(model.downloads),
+                                ),
+                                _buildStatBadge(
+                                  theme,
+                                  Icons.favorite_outline_rounded,
+                                  formatCompactCount(model.likes),
+                                ),
+                              ],
                               if (model.isGated)
                                 Container(
                                   padding: const EdgeInsets.symmetric(
@@ -1746,31 +1952,58 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
 
                 const SizedBox(height: 10),
 
-                // Description Box (middle of card from wireframe)
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest.withAlpha(
-                      50,
-                    ),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: theme.colorScheme.outlineVariant.withAlpha(60),
-                    ),
+                // Description Box (middle of card from wireframe; tap for details)
+                Material(
+                  color: theme.colorScheme.surfaceContainerHighest.withAlpha(
+                    50,
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        model.description,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                          height: 1.35,
+                  borderRadius: BorderRadius.circular(8),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () => _showModelDetailsDialog(model),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: theme.colorScheme.outlineVariant.withAlpha(60),
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      Wrap(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            model.description,
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              height: 1.35,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              Text(
+                                'Tap for full details',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  color: theme.colorScheme.primary,
+                                ),
+                              ),
+                              const SizedBox(width: 2),
+                              Icon(
+                                Icons.open_in_full_rounded,
+                                size: 11,
+                                color: theme.colorScheme.primary,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Wrap(
                         spacing: 6,
                         runSpacing: 4,
                         children: [
@@ -1809,6 +2042,8 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
                         ],
                       ),
                     ],
+                  ),
+                ),
                   ),
                 ),
 
@@ -2079,6 +2314,31 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildStatBadge(ThemeData theme, IconData icon, String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withAlpha(110),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 11, color: theme.colorScheme.onSurfaceVariant),
+          const SizedBox(width: 3),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
       ),
     );
   }

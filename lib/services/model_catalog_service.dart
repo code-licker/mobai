@@ -135,6 +135,8 @@ class ModelCatalogService {
         'limit': limit,
         'expand[]': const [
           'author',
+          'baseModels',
+          'cardData',
           'createdAt',
           'downloads',
           'gated',
@@ -183,6 +185,108 @@ class ModelCatalogService {
         'Failed to load models from Hugging Face (Status: ${response.statusCode})',
       );
     }
+  }
+
+  /// Fetches and parses a human-readable model description from the
+  /// Hugging Face repository's `README.md`.
+  Future<String?> fetchModelDescription(String repoId) async {
+    final cleanRepo = repoId.trim();
+    if (cleanRepo.isEmpty || !cleanRepo.contains('/')) return null;
+
+    final baseUri = Uri.tryParse(apiBaseUrl);
+    final origin = (baseUri != null && baseUri.hasScheme && baseUri.host.isNotEmpty)
+        ? '${baseUri.scheme}://${baseUri.host}${baseUri.hasPort ? ':${baseUri.port}' : ''}'
+        : 'https://huggingface.co';
+    final readmeUrl = '$origin/$cleanRepo/raw/main/README.md';
+
+    try {
+      final auth = _hfAuthOptionsForUrl(readmeUrl);
+      final response = await _dio.get<String>(
+        readmeUrl,
+        options: Options(
+          responseType: ResponseType.plain,
+          headers: auth?.headers,
+          receiveTimeout: const Duration(seconds: 8),
+          validateStatus: (status) => status != null && status < 400,
+        ),
+      );
+      final raw = response.data;
+      if (raw == null || raw.trim().isEmpty) return null;
+      return parseReadmeDescription(raw);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Strips YAML frontmatter, HTML badges/tags, and Markdown syntax from a
+  /// Hugging Face `README.md` into readable prose for catalog cards and details.
+  static String? parseReadmeDescription(String rawMarkdown) {
+    var text = rawMarkdown;
+    // Strip YAML frontmatter at top of README.md
+    text = text.replaceFirst(
+      RegExp(r'^\s*---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)'),
+      '',
+    );
+    // Strip HTML comments, <style>, <script>, and image/media blocks
+    text = text.replaceAll(RegExp(r'<!--[\s\S]*?-->'), '');
+    text = text.replaceAll(
+      RegExp(r'<(style|script|picture)\b[^>]*>[\s\S]*?</\1>', caseSensitive: false),
+      '',
+    );
+    // Replace list items / line breaks cleanly before stripping HTML tags
+    text = text.replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
+    text = text.replaceAll(
+      RegExp(r'</(p|div|li|tr|h[1-6])>', caseSensitive: false),
+      '\n',
+    );
+    text = text.replaceAll(RegExp(r'<li\b[^>]*>', caseSensitive: false), '• ');
+    // Strip Markdown linked badges [![alt](img)](link) and standalone images ![alt](img)
+    text = text.replaceAll(RegExp(r'\[!\[[^\]]*\]\([^\)]*\)\]\([^\)]*\)'), '');
+    text = text.replaceAll(RegExp(r'!\[[^\]]*\]\([^\)]*\)'), '');
+    // Convert Markdown links [label](url) -> label
+    text = text.replaceAllMapped(
+      RegExp(r'\[([^\]]+)\]\([^\)]+\)'),
+      (m) => m.group(1) ?? '',
+    );
+    // Strip any remaining HTML tags
+    text = text.replaceAll(RegExp(r'<[^>]+>'), '');
+    // Decode common HTML entities
+    text = text
+        .replaceAll('&nbsp;', ' ')
+        .replaceAll('&amp;', '&')
+        .replaceAll('&middot;', '•')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&#39;', "'")
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>');
+
+    final lines = text.split(RegExp(r'\r?\n'));
+    final cleanedLines = <String>[];
+    for (final rawLine in lines) {
+      var line = rawLine.trim();
+      if (line.isEmpty) {
+        if (cleanedLines.isNotEmpty && cleanedLines.last.isNotEmpty) {
+          cleanedLines.add('');
+        }
+        continue;
+      }
+      // Skip Markdown horizontal rules and table divider rows (| --- | --- |)
+      if (RegExp(r'^[-*_=\s|]+$').hasMatch(line)) continue;
+      if (line.startsWith('|') && line.endsWith('|')) continue;
+      // Strip leading blockquote / heading hashes / bold markers
+      line = line.replaceFirst(RegExp(r'^[>#\s]+'), '');
+      line = line.replaceAll('**', '').replaceAll('__', '').replaceAll('`', '');
+      line = line.replaceAll(RegExp(r'\s{2,}'), ' ').trim();
+      if (line.isEmpty) continue;
+      cleanedLines.add(line);
+    }
+
+    final joined = cleanedLines.join('\n').replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
+    if (joined.isEmpty) return null;
+    if (joined.length > 3500) {
+      return '${joined.substring(0, 3500).trimRight()}...';
+    }
+    return joined;
   }
 
   /// Fetches available `.gguf` files and sizes for a Hugging Face repository.

@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobai/models/open_model.dart';
+import 'package:mobai/services/model_catalog_service.dart';
 
 void main() {
   group('OpenModel.fromHuggingFace', () {
@@ -194,6 +195,58 @@ void main() {
 
       expect(fallbackTotalSizeOnly.downloadSizeMb, 105472);
       expect(fallbackTotalSizeOnly.isTooLargeForPhone(deviceRamGb: 8.0), isTrue);
+    });
+
+    test('parses cardData base_model/license cleanly without stats inside description', () {
+      final model = OpenModel.fromHuggingFace({
+        'id': 'Marceli1985/LFM3-1.7B-Uncensored-GGUF',
+        'author': 'Marceli1985',
+        'downloads': 398,
+        'likes': 1,
+        'cardData': {
+          'base_model': 'LiquidAI/LFM3-1.7B',
+          'license': 'lfm-open-license-v1.0',
+        },
+        'siblings': [
+          {'rfilename': 'LFM3-1.7B-Uncensored-AD-Q4_K_M.gguf'},
+        ],
+      });
+
+      expect(model.baseModel, 'LiquidAI/LFM3-1.7B');
+      expect(model.license, 'lfm-open-license-v1.0');
+      expect(model.description, contains('LiquidAI/LFM3-1.7B'));
+      expect(model.description.contains('downloads'), isFalse);
+      expect(model.description.contains('likes'), isFalse);
+    });
+
+    test('ModelCatalogService.parseReadmeDescription strips YAML frontmatter, HTML badges, and markdown links', () {
+      const sampleReadme = '''
+---
+base_model: LiquidAI/LFM3-1.7B
+license: mit
+---
+
+# LFM3-1.7B Uncensored
+
+<div style="display:flex"><a href="https://example.com"><img src="badge.png" alt="Badge"></a></div>
+
+[![arXiv](https://img.shields.io/badge/arxiv.svg)](https://arxiv.org/abs/123)
+
+Safety-ablated GGUF of [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B) tuned for fast on-device inference.
+''';
+
+      final parsed = ModelCatalogService.parseReadmeDescription(sampleReadme);
+      expect(parsed, isNotNull);
+      expect(parsed, isNot(contains('license: mit')));
+      expect(parsed, isNot(contains('<div')));
+      expect(parsed, isNot(contains('img.shields.io')));
+      expect(parsed, contains('LFM3-1.7B Uncensored'));
+      expect(
+        parsed,
+        contains(
+          'Safety-ablated GGUF of LiquidAI/LFM3-1.7B tuned for fast on-device inference.',
+        ),
+      );
     });
   });
 }

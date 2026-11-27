@@ -69,6 +69,11 @@ void main() {
               ],
             }),
           );
+        } else if (path == '/Marceli1985/LFM3-1.7B-Uncensored-GGUF/raw/main/README.md') {
+          req.response.headers.contentType = ContentType.text;
+          req.response.write(
+            '---\nlicense: mit\n---\n# LFM3 1.7B\nCompact uncensored model for mobile devices.',
+          );
         } else if (cursor == 'page2') {
           req.response.write(
             jsonEncode([
@@ -204,6 +209,29 @@ void main() {
       );
       expect(updatedModel.hasExactSizes, isTrue);
       expect(updatedModel.downloadSizeMb, 105472);
+    });
+
+    test('ensureDescriptionLoaded fetches and caches HF README description', () async {
+      final manager = ModelManagerService();
+      final model = OpenModel.fromHuggingFace({
+        'id': 'Marceli1985/LFM3-1.7B-Uncensored-GGUF',
+        'author': 'Marceli1985',
+        'downloads': 398,
+        'likes': 1,
+        'siblings': [
+          {'rfilename': 'LFM3-1.7B-Q4_K_M.gguf', 'size': 900 * 1024 * 1024},
+        ],
+      });
+      manager.addCustomModel(model);
+
+      final updated = await manager.ensureDescriptionLoaded(model);
+      expect(updated.hasFetchedDescription, isTrue);
+      expect(
+        updated.description,
+        contains('Compact uncensored model for mobile devices.'),
+      );
+      final inManager = manager.models.firstWhere((m) => m.id == model.id);
+      expect(inManager.hasFetchedDescription, isTrue);
     });
   });
 }

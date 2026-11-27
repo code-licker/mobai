@@ -133,6 +133,9 @@ class OpenModel {
   final int downloads;
   final int likes;
   final bool isGated;
+  final bool hasFetchedDescription;
+  final String? baseModel;
+  final String? license;
 
   OpenModel({
     required this.id,
@@ -151,6 +154,9 @@ class OpenModel {
     this.downloads = 0,
     this.likes = 0,
     this.isGated = false,
+    this.hasFetchedDescription = false,
+    this.baseModel,
+    this.license,
   });
 
   /// Returns true for auxiliary GGUFs (MTP speculative heads, mmproj vision
@@ -229,6 +235,9 @@ class OpenModel {
       downloads: (json['downloads'] as num?)?.toInt() ?? 0,
       likes: (json['likes'] as num?)?.toInt() ?? 0,
       isGated: (json['is_gated'] as bool?) ?? false,
+      hasFetchedDescription: (json['has_fetched_description'] as bool?) ?? false,
+      baseModel: json['base_model'] as String?,
+      license: json['license'] as String?,
     );
   }
 
@@ -476,13 +485,54 @@ class OpenModel {
         gatedRaw != null && gatedRaw != false && gatedRaw != 'false';
     final rawDate = json['createdAt'] ?? json['lastModified'];
     final createdAt = rawDate != null ? DateTime.tryParse(rawDate.toString()) : null;
-    String stats = '';
-    if (downloads > 0) {
-      stats += downloads >= 1000 ? ' ${(downloads / 1000).toStringAsFixed(1)}k downloads •' : ' $downloads downloads •';
-    }
-    stats += ' $likes likes';
 
-    final description = '${paramSize}B parameter GGUF model optimized for on-device inference via Hugging Face.$stats';
+    final cardData = json['cardData'];
+    String? baseModel;
+    String? license;
+    if (cardData is Map) {
+      final rawBase = cardData['base_model'];
+      if (rawBase is String && rawBase.trim().isNotEmpty) {
+        baseModel = rawBase.trim();
+      } else if (rawBase is List && rawBase.isNotEmpty) {
+        baseModel = rawBase.first.toString().trim();
+      }
+      final rawLicense = cardData['license'];
+      if (rawLicense is String && rawLicense.trim().isNotEmpty) {
+        license = rawLicense.trim();
+      }
+    }
+    if (baseModel == null && json['baseModels'] is Map) {
+      final modelsList = (json['baseModels'] as Map)['models'];
+      if (modelsList is List && modelsList.isNotEmpty) {
+        final first = modelsList.first;
+        if (first is Map && first['id'] is String) {
+          baseModel = (first['id'] as String).trim();
+        }
+      }
+    }
+
+    final informativeTags = tags
+        .map((t) => t.toString())
+        .where((t) {
+          final lower = t.toLowerCase();
+          return lower.isNotEmpty &&
+              lower != 'gguf' &&
+              lower != 'text-generation' &&
+              lower != 'endpoints_compatible' &&
+              !lower.startsWith('region:') &&
+              !lower.startsWith('license:');
+        })
+        .take(4)
+        .toList();
+
+    final summaryParts = <String>[
+      if (baseModel != null && baseModel.isNotEmpty) 'Based on $baseModel',
+      if (license != null && license.isNotEmpty) 'License: $license',
+      if (informativeTags.isNotEmpty) informativeTags.join(', '),
+    ];
+    final description = summaryParts.isNotEmpty
+        ? summaryParts.join(' • ')
+        : 'GGUF weights published by $author on Hugging Face.';
 
     return OpenModel(
       id: rawId,
@@ -501,6 +551,9 @@ class OpenModel {
       downloads: downloads,
       likes: likes,
       isGated: isGated,
+      hasFetchedDescription: false,
+      baseModel: baseModel,
+      license: license,
     );
   }
 
@@ -555,6 +608,9 @@ class OpenModel {
     'downloads': downloads,
     'likes': likes,
     if (isGated) 'is_gated': isGated,
+    if (hasFetchedDescription) 'has_fetched_description': hasFetchedDescription,
+    if (baseModel != null) 'base_model': baseModel,
+    if (license != null) 'license': license,
   };
 
   OpenModel copyWith({
@@ -574,6 +630,9 @@ class OpenModel {
     int? downloads,
     int? likes,
     bool? isGated,
+    bool? hasFetchedDescription,
+    String? baseModel,
+    String? license,
   }) {
     return OpenModel(
       id: id ?? this.id,
@@ -592,6 +651,10 @@ class OpenModel {
       downloads: downloads ?? this.downloads,
       likes: likes ?? this.likes,
       isGated: isGated ?? this.isGated,
+      hasFetchedDescription:
+          hasFetchedDescription ?? this.hasFetchedDescription,
+      baseModel: baseModel ?? this.baseModel,
+      license: license ?? this.license,
     );
   }
 }

@@ -446,36 +446,49 @@ class _ModelFilterBottomSheetState extends State<ModelFilterBottomSheet> {
                     children: [
                       const Icon(Icons.tune_rounded, size: 22),
                       const SizedBox(width: 8),
-                      Text(
-                        'Filter Models',
-                        style: theme.textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.bold,
+                      Expanded(
+                        child: Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                'Filter Models',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            if (isActive) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: theme.colorScheme.primaryContainer,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Text(
+                                  '$activeCount active',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: theme.colorScheme.onPrimaryContainer,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                       ),
-                      if (isActive) ...[
-                        const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: theme.colorScheme.primaryContainer,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            '$activeCount active',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              color: theme.colorScheme.onPrimaryContainer,
-                            ),
-                          ),
-                        ),
-                      ],
-                      const Spacer(),
                       if (isActive)
                         TextButton(
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                          ),
                           onPressed: _resetLocalFilters,
                           child: const Text('Reset All'),
                         ),

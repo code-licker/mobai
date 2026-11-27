@@ -187,6 +187,7 @@ class ModelManagerService extends ChangeNotifier {
   final Set<String> _enrichedModelIds = {};
   final Set<String> _inFlightEnrichmentIds = {};
   int _enrichmentEpoch = 0;
+  bool _backgroundEnrichmentEnabled = true;
   Future<void>? _pauseAllInFlight;
   double _deviceRamGb = 8.0;
 
@@ -353,9 +354,11 @@ class ModelManagerService extends ChangeNotifier {
   void configureForTesting({
     Dio? downloadDio,
     ModelCatalogService? catalogService,
+    bool enableBackgroundEnrichment = false,
   }) {
     if (downloadDio != null) _downloadDio = downloadDio;
     if (catalogService != null) _catalogService = catalogService;
+    _backgroundEnrichmentEnabled = enableBackgroundEnrichment;
     _downloadedModels.clear();
     _downloadStates.clear();
     _pauseRequestedIds.clear();
@@ -645,9 +648,7 @@ class ModelManagerService extends ChangeNotifier {
         })
         .toList();
     if (resumable.isEmpty) {
-      if (await _downloadsStateFile.exists()) {
-        await _downloadsStateFile.delete();
-      }
+      await _cleanupPartFile(_downloadsStateFile.path);
       return;
     }
     await _downloadsStateFile.writeAsString(jsonEncode(resumable), flush: true);
@@ -811,6 +812,7 @@ class ModelManagerService extends ChangeNotifier {
   }
 
   void _scheduleCatalogSizeEnrichment(List<OpenModel> candidates) {
+    if (!_backgroundEnrichmentEnabled) return;
     final epoch = _enrichmentEpoch;
     final pending = candidates
         .where(
@@ -818,7 +820,7 @@ class ModelManagerService extends ChangeNotifier {
               !m.id.startsWith('local:') &&
               m.repoUrl.contains('huggingface.co') &&
               m.id.contains('/') &&
-              !m.hasExactSizes &&
+              (!m.hasExactSizes || !m.hasFetchedDescription) &&
               !_enrichedModelIds.contains(m.id) &&
               !_inFlightEnrichmentIds.contains(m.id),
         )
@@ -843,17 +845,39 @@ class ModelManagerService extends ChangeNotifier {
       while (cursor < queue.length && epoch == _enrichmentEpoch) {
         final model = queue[cursor++];
         try {
-          final fetched = await _catalogService.fetchRepoGgufVariants(model.id);
+          final variantsFuture = model.hasExactSizes
+              ? Future<List<GgufVariant>>.value(const [])
+              : _catalogService
+                    .fetchRepoGgufVariants(model.id)
+                    .catchError((_) => const <GgufVariant>[]);
+          final descFuture = model.hasFetchedDescription
+              ? Future<String?>.value(null)
+              : _catalogService.fetchModelDescription(model.id);
+
+          final results = await Future.wait<dynamic>([
+            variantsFuture,
+            descFuture,
+          ]);
           if (epoch != _enrichmentEpoch) return;
           _enrichedModelIds.add(model.id);
-          if (fetched.isNotEmpty) {
-            final changed = _applyVariantsToCatalogModel(model.id, fetched);
-            if (changed) {
-              notifyListeners();
+
+          final fetchedVariants = results[0] as List<GgufVariant>;
+          final fetchedDesc = results[1] as String?;
+
+          var changed = false;
+          if (fetchedVariants.isNotEmpty) {
+            changed = _applyVariantsToCatalogModel(model.id, fetchedVariants);
+          }
+          if (fetchedDesc != null && fetchedDesc.isNotEmpty) {
+            if (_applyDescriptionToCatalogModel(model.id, fetchedDesc)) {
+              changed = true;
             }
           }
+          if (changed) {
+            notifyListeners();
+          }
         } catch (_) {
-          // Leave estimated catalog size intact on network/rate-limit errors.
+          // Leave estimated metadata intact on network/rate-limit errors.
         } finally {
           _inFlightEnrichmentIds.remove(model.id);
         }
@@ -866,6 +890,52 @@ class ModelManagerService extends ChangeNotifier {
         (_) => worker(),
       ),
     );
+  }
+
+  /// Ensures a catalog model's Hugging Face `README.md` description has been
+  /// fetched and cached on [_models] / [_customModels], returning the updated model.
+  Future<OpenModel> ensureDescriptionLoaded(OpenModel model) async {
+    final existing = _findModelById(model.id) ?? model;
+    if (existing.hasFetchedDescription ||
+        existing.id.startsWith('local:') ||
+        !existing.repoUrl.contains('huggingface.co') ||
+        !existing.id.contains('/')) {
+      return existing;
+    }
+
+    final fetched = await _catalogService.fetchModelDescription(existing.id);
+    if (fetched != null && fetched.isNotEmpty) {
+      if (_applyDescriptionToCatalogModel(existing.id, fetched)) {
+        notifyListeners();
+      }
+      return _findModelById(existing.id) ??
+          existing.copyWith(
+            description: fetched,
+            hasFetchedDescription: true,
+          );
+    }
+    return existing;
+  }
+
+  bool _applyDescriptionToCatalogModel(String modelId, String description) {
+    var updated = false;
+    final idx = _models.indexWhere((m) => m.id == modelId);
+    if (idx != -1) {
+      _models[idx] = _models[idx].copyWith(
+        description: description,
+        hasFetchedDescription: true,
+      );
+      updated = true;
+    }
+    final customIdx = _customModels.indexWhere((m) => m.id == modelId);
+    if (customIdx != -1) {
+      _customModels[customIdx] = _customModels[customIdx].copyWith(
+        description: description,
+        hasFetchedDescription: true,
+      );
+      updated = true;
+    }
+    return updated;
   }
 
   bool _applyVariantsToCatalogModel(
