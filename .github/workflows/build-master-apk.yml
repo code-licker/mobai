@@ -5,14 +5,80 @@ on:
     branches:
       - master
 
+permissions:
+  contents: write
+
+concurrency:
+  group: master-release
+  cancel-in-progress: false
+
 jobs:
   build-android-apk:
-    name: Analyze, Test & Build Release APK
+    name: Analyze, Test, Version & Release APK
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repository (full history & tags)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next semantic version & build number
+        id: version
+        shell: bash
+        run: |
+          git fetch --tags --force
+          LAST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+
+          PUBSPEC_LINE=$(grep -E '^version:' pubspec.yaml | head -n 1 | sed -E 's/^version:\s*//')
+          PUBSPEC_VER=$(echo "$PUBSPEC_LINE" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          PUBSPEC_BUILD=$(echo "$PUBSPEC_LINE" | sed -nE 's/^[0-9]+\.[0-9]+\.[0-9]+\+([0-9]+).*/\1/p')
+          PUBSPEC_VER="${PUBSPEC_VER:-1.0.0}"
+          CURR_BUILD="${PUBSPEC_BUILD:-0}"
+
+          if [ -n "$LAST_TAG" ]; then
+            BASE_VER="${LAST_TAG#v}"
+            COMMITS=$(git log "${LAST_TAG}..HEAD" --format="%s%n%b")
+          else
+            BASE_VER="$PUBSPEC_VER"
+            COMMITS=$(git log -n 20 --format="%s%n%b")
+          fi
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VER"
+          MAJOR=${MAJOR:-1}
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
+
+          if echo "$COMMITS" | grep -qE '(^[a-zA-Z]+(\([^)]+\))?!:|BREAKING CHANGE:|BREAKING-CHANGE:)'; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+            BUMP="major"
+          elif echo "$COMMITS" | grep -qE '^feat(\([^)]+\))?:'; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+            BUMP="minor"
+          else
+            PATCH=$((PATCH + 1))
+            BUMP="patch"
+          fi
+
+          while git rev-parse "v${MAJOR}.${MINOR}.${PATCH}" >/dev/null 2>&1; do
+            PATCH=$((PATCH + 1))
+          done
+
+          NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          NEXT_BUILD=$((CURR_BUILD + 1))
+          TAG="v${NEXT_VERSION}"
+
+          echo "last_tag=${LAST_TAG:-none}" >> "$GITHUB_OUTPUT"
+          echo "bump=${BUMP}" >> "$GITHUB_OUTPUT"
+          echo "version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${NEXT_BUILD}" >> "$GITHUB_OUTPUT"
+          echo "full_version=${NEXT_VERSION}+${NEXT_BUILD}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Computed ${NEXT_VERSION}+${NEXT_BUILD} (${BUMP} bump from ${LAST_TAG:-pubspec $PUBSPEC_VER})"
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -35,13 +101,39 @@ jobs:
       - name: Run unit and widget tests
         run: flutter test
 
+      - name: Commit bumped version to pubspec.yaml
+        id: commit_bump
+        shell: bash
+        run: |
+          FULL_VER="${{ steps.version.outputs.full_version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          sed -i -E "s/^version:.*/version: ${FULL_VER}/" pubspec.yaml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pubspec.yaml
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(release): bump version to ${TAG} (${FULL_VER}) [skip ci]"
+            git push origin HEAD:master
+          fi
+          echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Build universal release APK
         run: flutter build apk --release
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          gh release create "$TAG" build/app/outputs/flutter-apk/app-release.apk \
+            --target "${{ steps.commit_bump.outputs.release_sha }}" \
+            --title "MobAI ${TAG}" \
+            --generate-notes
 
       - name: Upload Android APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mobai-android-release-apk
+          name: mobai-android-release-${{ steps.version.outputs.tag }}
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 30
