@@ -86,9 +86,9 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   const methodChannel = MethodChannel(
-    'com.example.mobai/download_notifications',
+    'com.bokachoda.mobai/download_notifications',
   );
-  const eventChannelName = 'com.example.mobai/download_notification_events';
+  const eventChannelName = 'com.bokachoda.mobai/download_notification_events';
 
   late Directory tempRoot;
   final recordedMethodCalls = <MethodCall>[];

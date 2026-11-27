@@ -80,9 +80,9 @@ Implemented in [model_manager_service.dart](../lib/services/model_manager_servic
 
 ## 5. Native Platform Bridges (`Android` & `iOS`)
 
-Both platforms share channel `"com.example.mobai/download_notifications"` ([download_notification_service.dart](../lib/services/download_notification_service.dart)):
+Both platforms share channel `"com.bokachoda.mobai/download_notifications"` ([download_notification_service.dart](../lib/services/download_notification_service.dart)):
 
-| Method / Feature | Android ([MainActivity.kt](../android/app/src/main/kotlin/com/example/mobai/MainActivity.kt)) | iOS ([AppDelegate.swift](../ios/Runner/AppDelegate.swift)) |
+| Method / Feature | Android ([MainActivity.kt](../android/app/src/main/kotlin/com/bokachoda/mobai/MainActivity.kt)) | iOS ([AppDelegate.swift](../ios/Runner/AppDelegate.swift)) |
 | :--- | :--- | :--- |
 | `syncDownloadNotifications` | Launches/updates `DownloadForegroundService` (`dataSync`), WakeLock/WifiLock & `Pause`/`Resume`/`Cancel` broadcasts | Safe no-op |
 | `cancelDownloadNotification` | Removes notification & stops foreground service when queue empties | Safe no-op |

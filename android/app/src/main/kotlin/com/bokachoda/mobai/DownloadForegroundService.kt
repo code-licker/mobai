@@ -1,4 +1,4 @@
-package com.example.mobai
+package com.bokachoda.mobai
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -39,12 +39,12 @@ class DownloadForegroundService : Service() {
         const val CHANNEL_ID = "mobai_downloads"
         private const val CHANNEL_NAME = "Model Downloads"
 
-        const val ACTION_OPEN_DOWNLOADS = "com.example.mobai.ACTION_OPEN_DOWNLOADS"
-        const val ACTION_PAUSE = "com.example.mobai.ACTION_PAUSE"
-        const val ACTION_RESUME = "com.example.mobai.ACTION_RESUME"
-        const val ACTION_CANCEL = "com.example.mobai.ACTION_CANCEL"
-        private const val ACTION_SYNC = "com.example.mobai.ACTION_SYNC"
-        private const val ACTION_RESUME_FOREGROUND = "com.example.mobai.ACTION_RESUME_FOREGROUND"
+        const val ACTION_OPEN_DOWNLOADS = "com.bokachoda.mobai.ACTION_OPEN_DOWNLOADS"
+        const val ACTION_PAUSE = "com.bokachoda.mobai.ACTION_PAUSE"
+        const val ACTION_RESUME = "com.bokachoda.mobai.ACTION_RESUME"
+        const val ACTION_CANCEL = "com.bokachoda.mobai.ACTION_CANCEL"
+        private const val ACTION_SYNC = "com.bokachoda.mobai.ACTION_SYNC"
+        private const val ACTION_RESUME_FOREGROUND = "com.bokachoda.mobai.ACTION_RESUME_FOREGROUND"
 
         const val EXTRA_ACTION = "mobai_action"
         const val EXTRA_MODEL_ID = "mobai_model_id"

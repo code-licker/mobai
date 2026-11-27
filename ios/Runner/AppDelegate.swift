@@ -14,7 +14,7 @@ import UIKit
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     let messenger = engineBridge.applicationRegistrar.messenger()
     let channel = FlutterMethodChannel(
-      name: "com.example.mobai/download_notifications",
+      name: "com.bokachoda.mobai/download_notifications",
       binaryMessenger: messenger
     )
     channel.setMethodCallHandler { call, result in

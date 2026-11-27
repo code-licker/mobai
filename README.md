@@ -52,6 +52,7 @@ MobAI targets **mobile platforms only**:
 ## Project Structure
 
 ```text
+├── .github/workflows/               # GitHub Actions CI/artifact build on merge to master
 ├── android/                         # Android Kotlin app, foreground service, manifest & Gradle config
 ├── ios/                             # iOS Swift runner, Info.plist & Xcode project
 ├── assets/
@@ -107,6 +108,10 @@ $env:JAVA_HOME = '<path-to-jdk-17>'
 cd android
 .\gradlew.bat :app:compileDebugKotlin :app:processDebugMainManifest
 ```
+
+### GitHub Actions Build Artifact
+
+Merging or pushing to `master` triggers `.github/workflows/build-master-apk.yml`, which runs `flutter analyze`, `flutter test`, and `flutter build apk --release`, then uploads `mobai-android-release-apk` (`app-release.apk`) as a downloadable workflow artifact.
 
 ---
 

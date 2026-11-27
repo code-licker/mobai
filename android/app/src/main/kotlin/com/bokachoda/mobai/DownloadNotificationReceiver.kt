@@ -1,4 +1,4 @@
-package com.example.mobai
+package com.bokachoda.mobai
 
 import android.content.BroadcastReceiver
 import android.content.Context

@@ -1,4 +1,4 @@
-package com.example.mobai
+package com.bokachoda.mobai
 
 import android.content.Intent
 import android.net.Uri
@@ -75,8 +75,8 @@ object DownloadNotificationBridge {
 
 class MainActivity : FlutterActivity() {
     companion object {
-        private const val METHOD_CHANNEL = "com.example.mobai/download_notifications"
-        private const val EVENT_CHANNEL = "com.example.mobai/download_notification_events"
+        private const val METHOD_CHANNEL = "com.bokachoda.mobai/download_notifications"
+        private const val EVENT_CHANNEL = "com.bokachoda.mobai/download_notification_events"
     }
 
     private var methodChannel: MethodChannel? = null

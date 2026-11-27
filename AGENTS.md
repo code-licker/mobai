@@ -14,7 +14,7 @@
   - **Networking:** `dio` (Hugging Face API & buffered HTTP Range downloads)
   - **Storage & Permissions:** `path_provider`, `file_picker`, `permission_handler`, `shared_preferences`
 - **Target Platforms:**
-  - **Android:** `minSdk >= 24`, `compileSdk = 37`, Java 17 ([android/app/build.gradle.kts](android/app/build.gradle.kts)), package `com.example.mobai`
+  - **Android:** `minSdk >= 24`, `compileSdk = 37`, Java 17 ([android/app/build.gradle.kts](android/app/build.gradle.kts)), package `com.bokachoda.mobai`
   - **iOS:** `UIFileSharingEnabled` & `LSSupportsOpeningDocumentsInPlace` enabled ([ios/Runner/Info.plist](ios/Runner/Info.plist))
 
 ---
@@ -53,10 +53,13 @@ lib/
 
 android/app/src/main/
 ├── AndroidManifest.xml                      # Foreground dataSync service, wake lock, notification receiver & perms
-└── kotlin/com/example/mobai/
-    ├── MainActivity.kt                      # Method/EventChannels ("com.example.mobai/download_notifications"), RAM, openUrl
+└── kotlin/com/bokachoda/mobai/
+    ├── MainActivity.kt                      # Method/EventChannels ("com.bokachoda.mobai/download_notifications"), RAM, openUrl
     ├── DownloadForegroundService.kt         # Persistent notification progress + WakeLock/WifiLock + task-remove pause
     └── DownloadNotificationReceiver.kt      # Notification Pause/Resume/Cancel broadcast handler
+
+.github/workflows/
+└── build-master-apk.yml                     # CI workflow on push to master: analyze, test & upload app-release.apk
 
 ios/Runner/
 └── AppDelegate.swift                        # MethodChannel handler for openUrl & getDeviceRamMb
@@ -108,7 +111,7 @@ test/                                        # 11 test suites (56 tests): unit, 
 - **Buffered & Resumable Streaming:** Downloads stream with a 1 MB `BytesBuilder` buffer, ~1000 ms progress notifications, and HTTP `Range: bytes=<offset>-` resume (`206` resume, `200` restart fallback, `416` EOF/re-download handling).
 - **Split-GGUF Shards (`-00001-of-0000N.gguf`):** `OpenModel.parseSplitShard` groups shards into a single variant, downloading parts sequentially (`1..N`). Only Part 1 (`partIdx == 0`) starts with the `GGUF` magic header (`0x47 0x47 0x55 0x46`); secondary shards are raw tensor chunks. Reject inference/sync on incomplete shard sets or auxiliary weights (`mmproj`, `mtp`, `draft`).
 - **Lifecycle rule:** Do **not** pause active downloads on navigation (`PopScope` uses `moveToBackground()` when active downloads exist), search/sort/filter changes, or app backgrounding (`inactive`/`paused`/`hidden`). Only pause/flush on explicit Pause/Cancel actions or process termination (`AppLifecycleState.detached` / Android `onTaskRemoved`).
-- **Platform parity note:** Native foreground download notifications (`DownloadForegroundService`) are implemented for Android; both Android (`MainActivity.kt`) and iOS (`AppDelegate.swift`) implement `"openUrl"` and `"getDeviceRamMb"` on channel `"com.example.mobai/download_notifications"`.
+- **Platform parity note:** Native foreground download notifications (`DownloadForegroundService`) are implemented for Android; both Android (`MainActivity.kt`) and iOS (`AppDelegate.swift`) implement `"openUrl"` and `"getDeviceRamMb"` on channel `"com.bokachoda.mobai/download_notifications"`.
 
 ### Single-Model Inference Policy
 - `LocalInferenceService` keeps **at most one model in RAM** to avoid mobile OOM. Always invoke `onBeforeDeleteModel` / `unloadModel()` before deleting or switching models.

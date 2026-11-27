@@ -15,10 +15,10 @@ class DownloadNotificationService {
   DownloadNotificationService._internal();
 
   static const MethodChannel _methodChannel = MethodChannel(
-    'com.example.mobai/download_notifications',
+    'com.bokachoda.mobai/download_notifications',
   );
   static const EventChannel _eventChannel = EventChannel(
-    'com.example.mobai/download_notification_events',
+    'com.bokachoda.mobai/download_notification_events',
   );
 
   bool _hasPendingOpenDownloads = false;
