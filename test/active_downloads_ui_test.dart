@@ -283,7 +283,7 @@ void main() {
           await manager.searchModels('unrelated-query');
           manager.updateFilterCriteria(
             ModelFilterCriteria(
-              phoneReadyOnly: true,
+              hideNotRecommended: true,
               selectedProviders: {'NonExistentProvider'},
             ),
           );

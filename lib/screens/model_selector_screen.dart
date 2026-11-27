@@ -783,21 +783,21 @@ class _ModelSelectorScreenState extends State<ModelSelectorScreen> {
     }
 
     Future<void> openInBrowser(BuildContext dialogContext, String url) async {
+      final messenger = ScaffoldMessenger.of(dialogContext);
       final opened = await DownloadNotificationService().openUrl(url);
-      if (!opened && dialogContext.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+      if (!opened) {
+        messenger.showSnackBar(
           const SnackBar(content: Text('Could not open link in browser.')),
         );
       }
     }
 
     Future<void> copyLink(BuildContext dialogContext, String url) async {
+      final messenger = ScaffoldMessenger.of(dialogContext);
       await Clipboard.setData(ClipboardData(text: url));
-      if (dialogContext.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Link copied to clipboard')),
-        );
-      }
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Link copied to clipboard')),
+      );
     }
 
     Widget buildLinkBlock(
