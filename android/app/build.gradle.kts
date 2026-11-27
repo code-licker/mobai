@@ -5,8 +5,8 @@ plugins {
 }
 
 android {
-    namespace = "com.example.mobai"
-    compileSdk = flutter.compileSdkVersion
+    namespace = "com.bokachoda.mobai"
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -16,10 +16,10 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.mobai"
+        applicationId = "com.bokachoda.mobai"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = maxOf(flutter.minSdkVersion, 24)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

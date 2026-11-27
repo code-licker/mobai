@@ -8,6 +8,8 @@
         "quantization": "Q4_K_M",
         "download_size_mb": 390,
         "min_ram_gb": 3,
+        "description": "Ultra-compact multilingual language model tailored for edge devices, chat assistants, and low-latency mobile inference.",
+        "repo_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct",
         "download_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
     },
     {
@@ -19,6 +21,8 @@
         "quantization": "Q4_K_M",
         "download_size_mb": 800,
         "min_ram_gb": 4,
+        "description": "Efficient multilingual instruction-tuned model by Meta, engineered for on-device reasoning, summarization, and chat.",
+        "repo_url": "https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct",
         "download_url": "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
     },
     {
@@ -30,6 +34,8 @@
         "quantization": "Q4_K_M",
         "download_size_mb": 1650,
         "min_ram_gb": 6,
+        "description": "High-capability lightweight model built by Google using Gemini research, designed for robust logic and mobile deployment.",
+        "repo_url": "https://huggingface.co/google/gemma-2-2b-it",
         "download_url": "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf"
     }
 ]
